@@ -24,14 +24,14 @@ Enable Actions and Packages for the Gitea repository. Create a personal access t
 A pushed `x.x.x` tag publishes the matching version and `latest` images. The tag must match the `package.json` version.
 
 ```sh
-git tag -a 1.0.1 -m "Release 1.0.1"
-git push origin 1.0.1
+git tag -a 0.1.0 -m "Release 0.1.0"
+git push origin 0.1.0
 ```
 
 Run **Publish development image** from the Gitea Actions page to replace the `development` image. Tailnet clients can pull published images after Gitea authentication:
 
 ```sh
-docker pull gitea.tailebf42a.ts.net/tjallo/keybridge:1.0.1
+docker pull gitea.tailebf42a.ts.net/tjallo/keybridge:0.1.0
 docker pull gitea.tailebf42a.ts.net/tjallo/keybridge:development
 ```
 

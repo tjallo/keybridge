@@ -1,4 +1,4 @@
-FROM node:26.0.0-alpine AS dependencies
+FROM node:26-alpine AS dependencies
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
