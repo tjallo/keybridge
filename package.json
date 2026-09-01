@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev:web": "vite --host 0.0.0.0 --port 5173",
-    "dev:relay": "node --watch --experimental-strip-types src/server/main.ts",
+    "dev:relay": "npm run build:server && sh -c 'tsc -p tsconfig.server.json --watch & exec node --watch build/server/main.js'",
     "build": "vite build && node scripts/release-info.mjs && tsc -p tsconfig.server.json",
     "start": "node build/server/main.js",
     "check": "svelte-check --tsconfig ./tsconfig.json && tsc -p tsconfig.server.json --noEmit",
