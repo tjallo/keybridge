@@ -10,21 +10,25 @@
   export let canApprove: boolean;
   export let onApprove: () => void;
   export let onReject: () => void;
-  export let onSend: (label: string, value: string, ttl: number) => void;
+  export let onSend: (label: string, value: string, ttl: number) => Promise<boolean>;
   export let onRevoke: (id: string) => void;
   export let onExtend: () => void;
   export let onEnd: () => void;
   let canvas: HTMLCanvasElement;
+  let linkInput: HTMLInputElement;
   let label = '';
   let value = '';
   let ttl = 60;
   let copied = false;
+  let copyFailed = false;
+  let sending = false;
   onMount(() => {
     const qr = qrcode(0, 'M');
     qr.addData(link);
     qr.make();
     const scale = 4;
-    canvas.width = canvas.height = qr.getModuleCount() * scale;
+    const quietZone = 4;
+    canvas.width = canvas.height = (qr.getModuleCount() + quietZone * 2) * scale;
     const context = canvas.getContext('2d');
     if (!context) return;
     context.fillStyle = '#fff';
@@ -32,20 +36,31 @@
     context.fillStyle = '#101827';
     for (let row = 0; row < qr.getModuleCount(); row++)
       for (let col = 0; col < qr.getModuleCount(); col++)
-        if (qr.isDark(row, col)) context.fillRect(col * scale, row * scale, scale, scale);
+        if (qr.isDark(row, col))
+          context.fillRect((col + quietZone) * scale, (row + quietZone) * scale, scale, scale);
   });
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(link);
       copied = true;
+      copyFailed = false;
     } catch {
       copied = false;
+      copyFailed = true;
+      linkInput.focus();
+      linkInput.select();
     }
   }
-  function send() {
-    onSend(label, value, ttl);
-    label = '';
-    value = '';
+  async function send() {
+    if (sending) return;
+    sending = true;
+    const submittedLabel = label;
+    const submittedValue = value;
+    if (await onSend(submittedLabel, submittedValue, ttl)) {
+      if (label === submittedLabel) label = '';
+      if (value === submittedValue) value = '';
+    }
+    sending = false;
   }
 </script>
 
@@ -60,9 +75,12 @@
         <h1>Pair a Receiver</h1>
         <canvas bind:this={canvas} aria-label="Pairing QR code"></canvas>
         <p>Pairing link (contains the room key)</p>
-        <input readonly value={link} aria-label="Pairing link" /><button onclick={copyLink}
-          >Copy full link</button
+        <input bind:this={linkInput} readonly value={link} aria-label="Pairing link" /><button
+          onclick={copyLink}>Copy full link</button
         >{#if copied}<small>Copied. Share the PIN separately when practical.</small>{/if}
+        {#if copyFailed}<small role="alert"
+            >Copy failed. The pairing link is selected for manual copy.</small
+          >{/if}
       </div>
       <div class="panel pin">
         <h2>Separate PIN</h2>
@@ -87,7 +105,9 @@
             value={120}>2 minutes</option
           ><option value={300}>5 minutes</option></select
         ></label
-      ><button class="primary" disabled={!label || !value} onclick={send}>Send secret</button>
+      ><button class="primary" disabled={sending || !label || !value} onclick={send}
+        >{sending ? 'Sending…' : 'Send secret'}</button
+      >
     </div>{/if}
   <div class="toolbar">
     <button onclick={onExtend}>Extend room 10 minutes</button><button class="danger" onclick={onEnd}

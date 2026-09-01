@@ -1,6 +1,6 @@
 # KeyBridge protocol v1
 
-Protocol version **1 is frozen**. Browser and Relay frames are bounded JSON text; binary frames are unsupported. A first frame is `create`, `join`, or `resume`. Every mutation includes a random `requestId`; repeated identifiers are acknowledged without repeating the mutation.
+Protocol version **1 is frozen**. Browser and Relay frames are bounded JSON text; binary frames are unsupported. A first frame is `create`, `join`, or `resume`. Every mutation includes a random `requestId`; bounded Room-level completed outcomes survive reconnect grace, and repeated identifiers receive the original acknowledgement without repeating the mutation.
 
 ## Pairing capability
 
@@ -43,6 +43,8 @@ Directions are `sender-to-receiver` and `receiver-to-sender`. Kinds are `pair-re
 
 Commands: `create`, `join`, `resume`, `pair`, `approve`, `reject`, `extend`, `end`, `leave`, `item`, `revoke`, and `pong`. Events: `created`, `joined`, `resumed`, `pair_request`, `approved`, `rejected`, `item`, `revoked`, `room_state`, `room_ended`, `ack`, and `error`.
 
+A `revoke` command carries the public item identifier and a `control` envelope whose authenticated body duplicates that identifier. Sender revocations use the sender-to-receiver control key and direction; Receiver revocations use the receiver-to-sender control key and direction. The peer authenticates this envelope before removing its local item.
+
 Stable public errors are `busy`, `expired`, `invalid_message`, `not_allowed`, `rate_limited`, `room_unavailable`, and `unsupported_version`. An unavailable random room and a busy receiver slot both use `room_unavailable`.
 
-Frames are below 96 KiB. An encrypted envelope is at most 72 KiB. Item TTL is 30, 60, 120, or 300 seconds. Relay credentials are random role-specific capabilities and are never part of encrypted payload key derivation.
+Frames are below 96 KiB. Every encrypted envelope is at most 72 KiB. Item TTL is 30, 60, 120, or 300 seconds. Relay credentials are random role-specific capabilities and are never part of encrypted payload key derivation.

@@ -4,13 +4,13 @@
   export let onRevoke: (id: string) => void;
   let revealed = false;
   let copyFailed = false;
-  let selected = false;
+  let valueElement: HTMLTextAreaElement;
   let remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000));
   const timer = setInterval(
     () => (remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000))),
     1000,
   );
-  import { onDestroy } from 'svelte';
+  import { onDestroy, tick } from 'svelte';
   onDestroy(() => clearInterval(timer));
   async function copy() {
     try {
@@ -19,16 +19,23 @@
     } catch {
       revealed = true;
       copyFailed = true;
-      selected = true;
+      await tick();
+      valueElement.focus();
+      valueElement.select();
     }
   }
 </script>
 
 <article class="secret-card" aria-label={`Secret ${item.label}`}>
   <header><strong>{item.label}</strong><span>{remaining}s</span></header>
-  <small>Text · {item.ttl}s TTL</small>{#if receiver}<pre class:selected>{revealed
-        ? item.value
-        : '••••••••••••'}</pre>
+  <small>Text · {item.ttl}s TTL</small>{#if receiver}<textarea
+      class="secret-value"
+      bind:this={valueElement}
+      readonly
+      rows="3"
+      aria-label={`Value for ${item.label}`}
+      value={revealed ? item.value : '••••••••••••'}
+    ></textarea>
     <div class="actions">
       <button onclick={() => (revealed = !revealed)}>{revealed ? 'Hide' : 'Reveal'}</button><button
         onclick={copy}>Copy</button

@@ -66,6 +66,36 @@ test('both browsers derive matching pairing and directional session keys', async
   await assert.rejects(() => decryptJson(a.senderControl, envelope));
   await assert.rejects(() => decryptJson(a.receiverControl, envelope));
 });
+test('directional control envelopes authenticate revocation identifiers', async () => {
+  const pairing = await derivePairingKey(
+    new Uint8Array(32).fill(9),
+    'AAAAAAAAAAAAAAAAAAAAAA',
+    '23456789',
+  );
+  const keys = await deriveSessionKeys(pairing, 'AAAAAAAAAAAAAAAAAAAAAA', 'receiver', 'sender');
+  const itemId = 'IIIIIIIIIIIIIIIIIIIIII';
+  const envelope = await encryptJson(
+    keys.senderControl,
+    {
+      roomId: 'AAAAAAAAAAAAAAAAAAAAAA',
+      messageId: 'CCCCCCCCCCCCCCCCCCCCCC',
+      direction: 'sender-to-receiver',
+      kind: 'control',
+      expiresAt: null,
+    },
+    { itemId },
+  );
+  assert.equal(envelope.messageId, 'CCCCCCCCCCCCCCCCCCCCCC');
+  assert.equal(
+    (await decryptJson<{ itemId: string }>(keys.senderControl, envelope)).itemId,
+    itemId,
+  );
+  await assert.rejects(() => decryptJson(keys.receiverControl, envelope));
+  await assert.rejects(() =>
+    decryptJson(keys.senderControl, { ...envelope, direction: 'receiver-to-sender' }),
+  );
+});
+
 test('ciphertext, AAD modification, and repeated message identifiers are rejected', async () => {
   const key = await derivePairingKey(
     new Uint8Array(32).fill(1),

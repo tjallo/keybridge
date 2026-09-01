@@ -1,6 +1,13 @@
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import { MAX_FRAME_BYTES, MAX_ENVELOPE_BYTES, type EncryptedEnvelope } from '../shared/envelope.js';
+import {
+  MAX_FRAME_BYTES,
+  MAX_ENVELOPE_BYTES,
+  matchesEnvelope,
+  type Direction,
+  type EncryptedEnvelope,
+  type EnvelopeKind,
+} from '../shared/envelope.js';
 import { parseMessage } from './protocol.js';
 import { Room } from './rooms.js';
 import { RateLimiter, addressGroup } from './rate-limit.js';
@@ -11,7 +18,7 @@ interface Peer {
   room: Room | null;
   role: 'sender' | 'receiver' | null;
   alive: boolean;
-  seen: Set<string>;
+  commandTimes: number[];
   intentional: boolean;
 }
 interface Peers {
@@ -63,7 +70,7 @@ export class Relay {
       room: null,
       role: null,
       alive: true,
-      seen: new Set(),
+      commandTimes: [],
       intentional: false,
     };
     socket.on('pong', () => (peer.alive = true));
@@ -95,11 +102,13 @@ export class Relay {
       peer.alive = true;
       return;
     }
-    if (peer.seen.has(message.requestId)) {
-      this.#send(peer, { type: 'ack', requestId: message.requestId });
+    const now = Date.now();
+    peer.commandTimes = peer.commandTimes.filter((time) => now - time < 60_000);
+    if (peer.commandTimes.length >= 200) {
+      this.#error(peer, new Error('rate_limited'), message.requestId);
       return;
     }
-    peer.seen.add(message.requestId);
+    peer.commandTimes.push(now);
     try {
       if (!peer.role) {
         if (message.type === 'create') this.#create(peer, message.roomId, message.requestId);
@@ -111,7 +120,7 @@ export class Relay {
       }
       this.#active(peer, message);
     } catch (error) {
-      this.#error(peer, error);
+      this.#error(peer, error, message.requestId);
     }
   }
   #create(peer: Peer, roomId: string, requestId: string): void {
@@ -145,7 +154,7 @@ export class Relay {
     this.#notify(
       room,
       { type: 'room_state', state: room.state, deadline: room.deadline },
-      'sender',
+      'receiver',
     );
   }
   #resume(
@@ -169,70 +178,102 @@ export class Relay {
       deadline: room.deadline,
       items: room.snapshot(Date.now()),
     });
-    this.#notify(
-      room,
-      { type: 'room_state', state: room.state, deadline: room.deadline },
-      role === 'sender' ? 'receiver' : 'sender',
-    );
+    this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline }, role);
   }
   #active(peer: Peer, message: Exclude<ReturnType<typeof parseMessage>, null>): void {
     const room = peer.room;
-    if (!room) return;
+    if (!room || message.type === 'pong') return;
+    const cached = room.requestResult(message.requestId);
+    if (cached !== undefined) {
+      this.#send(peer, cached);
+      return;
+    }
+    room.ensureCommandCapacity();
     const now = Date.now();
-    if (message.type === 'pair' && peer.role === 'receiver' && room.state === 'PAIR_PENDING') {
+    if (message.type === 'pair' && peer.role === 'receiver') {
+      room.recordPairFrame();
+      const envelope = message.envelope as EncryptedEnvelope;
+      this.#validateEnvelope(envelope, room, 'receiver-to-sender', 'pair-request', 'null');
       this.#sendRole(room, 'sender', {
         type: 'pair_request',
-        envelope: message.envelope,
+        envelope,
         requestId: message.requestId,
       });
-      this.#send(peer, { type: 'ack', requestId: message.requestId });
+      this.#complete(peer, room, message.requestId, { type: 'ack', requestId: message.requestId });
       return;
     }
     if (message.type === 'approve' && peer.role === 'sender') {
+      const envelope = message.envelope as EncryptedEnvelope;
+      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'pair-response', 'null');
       const credential = room.approve(now);
       this.#sendRole(room, 'receiver', {
         type: 'approved',
-        envelope: message.envelope,
+        envelope,
         credential,
         requestId: message.requestId,
       });
-      this.#send(peer, { type: 'ack', requestId: message.requestId, state: room.state });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+        state: room.state,
+      });
       return;
     }
     if (message.type === 'reject' && peer.role === 'sender') {
       room.reject(now);
       this.#sendRole(room, 'receiver', { type: 'rejected' });
       this.#detachReceiver(room);
-      this.#send(peer, { type: 'ack', requestId: message.requestId, state: room.state });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+        state: room.state,
+      });
       return;
     }
     if (message.type === 'item' && peer.role === 'sender') {
-      const bytes = Buffer.byteLength(JSON.stringify(message.envelope));
-      if (bytes > MAX_ENVELOPE_BYTES) throw new Error('invalid_message');
       const envelope = message.envelope as EncryptedEnvelope;
+      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'item', 'present');
       if (
-        envelope.kind !== 'item' ||
-        envelope.direction !== 'sender-to-receiver' ||
         envelope.expiresAt === null ||
         envelope.expiresAt <= now ||
         envelope.expiresAt > now + 301_000
       )
         throw new Error('invalid_message');
+      const bytes = Buffer.byteLength(JSON.stringify(envelope));
       room.store(envelope, bytes, now);
       this.#sendRole(room, 'receiver', { type: 'item', envelope });
-      this.#send(peer, { type: 'ack', requestId: message.requestId, deadline: room.deadline });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+        deadline: room.deadline,
+      });
       return;
     }
-    if (message.type === 'revoke') {
+    if (message.type === 'revoke' && peer.role !== null) {
+      const envelope = message.envelope as EncryptedEnvelope;
+      const direction = peer.role === 'sender' ? 'sender-to-receiver' : 'receiver-to-sender';
+      this.#validateEnvelope(envelope, room, direction, 'control', 'null');
       room.revoke(message.itemId);
-      this.#notify(room, { type: 'revoked', itemId: message.itemId });
-      this.#send(peer, { type: 'ack', requestId: message.requestId });
+      const otherRole = peer.role === 'sender' ? 'receiver' : 'sender';
+      this.#sendRole(room, otherRole, {
+        type: 'revoked',
+        itemId: message.itemId,
+        envelope,
+      });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+      });
       return;
     }
     if (message.type === 'extend' && peer.role === 'sender') {
       room.extend(now);
       this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline });
-      this.#send(peer, { type: 'ack', requestId: message.requestId });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+        deadline: room.deadline,
+      });
       return;
     }
     if (message.type === 'end' && peer.role === 'sender') {
@@ -251,6 +292,25 @@ export class Relay {
       return;
     }
     throw new Error('not_allowed');
+  }
+
+  #validateEnvelope(
+    envelope: EncryptedEnvelope,
+    room: Room,
+    direction: Direction,
+    kind: EnvelopeKind,
+    expiresAt: 'null' | 'present',
+  ): void {
+    if (
+      Buffer.byteLength(JSON.stringify(envelope)) > MAX_ENVELOPE_BYTES ||
+      !matchesEnvelope(envelope, { roomId: room.id, direction, kind, expiresAt })
+    )
+      throw new Error('invalid_message');
+  }
+
+  #complete(peer: Peer, room: Room, requestId: string, response: object): void {
+    room.completeRequest(requestId, response);
+    this.#send(peer, response);
   }
   #attach(peer: Peer, room: Room, role: 'sender' | 'receiver'): void {
     peer.room = room;
@@ -333,7 +393,7 @@ export class Relay {
     if (peer.socket.readyState === WebSocket.OPEN)
       peer.socket.send(JSON.stringify({ version: 1, ...(message as object) }));
   }
-  #error(peer: Peer, error: unknown): void {
+  #error(peer: Peer, error: unknown, requestId?: string): void {
     const code =
       error instanceof Error &&
       [
@@ -346,7 +406,7 @@ export class Relay {
       ].includes(error.message)
         ? error.message
         : 'invalid_message';
-    this.#send(peer, { type: 'error', code });
+    this.#send(peer, { type: 'error', code, ...(requestId ? { requestId } : {}) });
     if (code === 'invalid_message') peer.socket.close(1007, code);
   }
   #fail(peer: Peer, code: string): void {
@@ -356,6 +416,7 @@ export class Relay {
   shutdown(): void {
     clearInterval(this.#timer);
     for (const room of [...this.rooms.values()]) this.#end(room, 'shutdown');
+    for (const socket of this.#wss.clients) socket.close(1001, 'shutdown');
     this.#wss.close();
   }
 }

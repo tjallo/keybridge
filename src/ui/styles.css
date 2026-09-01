@@ -111,6 +111,7 @@ button {
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .status {
   margin-bottom: 16px;
@@ -145,16 +146,13 @@ canvas {
 .secret-card {
   margin: 14px 0;
 }
-.secret-card pre {
+.secret-value {
   white-space: pre-wrap;
   word-break: break-word;
   background: #eef2f7;
   border-radius: 8px;
   padding: 16px;
-  user-select: none;
-}
-.secret-card pre.selected {
-  user-select: text;
+  resize: vertical;
 }
 .error {
   background: #fff0f0;
@@ -178,6 +176,10 @@ canvas {
   }
   .pin strong {
     font-size: 1.8rem;
+  }
+  .actions button,
+  .toolbar button {
+    flex: 1 1 8rem;
   }
   .status {
     align-items: flex-start;

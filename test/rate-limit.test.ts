@@ -4,6 +4,8 @@ import { RateLimiter, addressGroup } from '../build/server/rate-limit.js';
 test('normalizes IPv4 mapped and groups IPv6 by /64', () => {
   assert.equal(addressGroup('::ffff:192.0.2.1'), '192.0.2.1');
   assert.equal(addressGroup('2001:db8:abcd:1234:1:2:3:4'), '2001:db8:abcd:1234::/64');
+  assert.equal(addressGroup('2001:db8::1'), '2001:db8:0:0::/64');
+  assert.equal(addressGroup('2001:0db8:0:0::2'), addressGroup('2001:db8::1'));
   assert.equal(addressGroup('not-an-ip'), 'unknown');
 });
 test('connection and room creation limits', () => {

@@ -13,12 +13,13 @@
     deriveSessionKeys,
     encryptJson,
     decryptJson,
+    encodePlaintext,
     ReplayGuard,
     normalizePin,
     type SessionKeys,
   } from './crypto';
   import type { EncryptedEnvelope } from '../shared/envelope';
-  import { MAX_PLAINTEXT_BYTES } from '../shared/envelope';
+  import { isEnvelope, matchesEnvelope, MAX_PLAINTEXT_BYTES } from '../shared/envelope';
   type Item = {
     id: string;
     label: string;
@@ -54,7 +55,17 @@
   let pairingKey: CryptoKey | null = null;
   let keys: SessionKeys | null = null;
   let items: Item[] = [];
-  const replay = new ReplayGuard();
+  const itemReplay = new ReplayGuard();
+  const pairingReplay = new ReplayGuard();
+  const controlReplay = new ReplayGuard();
+  const pendingMutations = new Map<
+    string,
+    { resolve: (accepted: boolean) => void; timer: ReturnType<typeof setTimeout> }
+  >();
+  let restoring = false,
+    resumeRetries = 0,
+    rejectedClose = false;
+  let restoreCommand: object | null = null;
   const request = () => randomId();
   const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const send = (value: object) => socket?.send(JSON.stringify({ version: 1, ...value }));
@@ -67,6 +78,11 @@
   }
   function clear() {
     sessionStorage.removeItem('keybridge.room');
+    for (const pending of pendingMutations.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(false);
+    }
+    pendingMutations.clear();
     roomKey = '';
     pin = '';
     credential = '';
@@ -80,9 +96,43 @@
     socket.onmessage = (event) =>
       void handle(JSON.parse(String(event.data)) as Record<string, unknown>);
     socket.onclose = (event) => {
-      if (event.code !== 1000 && event.code !== 4001)
+      if (event.code === 4000 && rejectedClose) {
+        rejectedClose = false;
+        setTimeout(() => connect({ type: 'join', roomId, requestId: request() }), 200);
+      } else if (event.code !== 1000 && event.code !== 4001 && !restoring)
         error = 'Connection lost. Reload within 60 seconds to reconnect.';
     };
+  }
+  function sendMutation(command: Record<string, unknown>): Promise<boolean> {
+    const requestId = request();
+    send({ ...command, requestId });
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        pendingMutations.delete(requestId);
+        resolve(false);
+      }, 5000);
+      pendingMutations.set(requestId, { resolve, timer });
+    });
+  }
+  function finishMutation(requestId: unknown, accepted: boolean): void {
+    if (typeof requestId !== 'string') return;
+    const pending = pendingMutations.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingMutations.delete(requestId);
+    pending.resolve(accepted);
+  }
+  function retryResume(): void {
+    if (!restoreCommand) return;
+    socket?.close(1000);
+    if (resumeRetries++ < 8) setTimeout(() => connect(restoreCommand!), 250);
+    else {
+      restoring = false;
+      restoreCommand = null;
+      clear();
+      view = 'start';
+      error = 'The saved Room has expired or is no longer available.';
+    }
   }
   async function createRoom() {
     clear();
@@ -100,7 +150,14 @@
       key = params.get('key');
     if (!id || !key) return false;
     history.replaceState(null, '', location.pathname + location.search);
-    if (!/^[A-Za-z0-9_-]{22}$/.test(id) || fromBase64url(key).length !== 32) {
+    try {
+      if (
+        !/^[A-Za-z0-9_-]{22}$/.test(id) ||
+        !/^[A-Za-z0-9_-]{43}$/.test(key) ||
+        fromBase64url(key).length !== 32
+      )
+        throw new Error('invalid link');
+    } catch {
       error = 'Invalid pairing link.';
       return true;
     }
@@ -121,9 +178,16 @@
     pairingKey = await derivePairingKey(fromBase64url(roomKey), roomId, pin);
     if (pendingReceiverNonce && senderNonce)
       keys = await deriveSessionKeys(pairingKey, roomId, pendingReceiverNonce, senderNonce);
-    if (view === 'sender') link = `${location.origin}/#room=${roomId}&key=${roomKey}`;
-    if (view === 'receiver' && !credential) connect({ type: 'join', roomId, requestId: request() });
-    else connect({ type: 'resume', roomId, role: view, credential, requestId: request() });
+    if (view === 'sender') {
+      link = `${location.origin}/#room=${roomId}&key=${roomKey}`;
+      canApprove = Boolean(pendingReceiverNonce && !senderNonce);
+    }
+    restoring = true;
+    restoreCommand =
+      view === 'receiver' && !credential
+        ? { type: 'join', roomId, requestId: request() }
+        : { type: 'resume', roomId, role: view, credential, requestId: request() };
+    connect(restoreCommand);
   }
   async function submitPin(value: string) {
     try {
@@ -157,6 +221,11 @@
   }
   async function handle(message: Record<string, unknown>) {
     if (message.type === 'error') {
+      finishMutation(message.requestId, false);
+      if (restoring && message.code === 'room_unavailable') {
+        retryResume();
+        return;
+      }
       error = String(message.code);
       return;
     }
@@ -168,6 +237,8 @@
       return;
     }
     if (message.type === 'joined') {
+      restoring = false;
+      restoreCommand = null;
       receiverView = 'PIN';
       return;
     }
@@ -183,10 +254,25 @@
     if (message.type === 'pair_request' && view === 'sender' && pairingKey) {
       try {
         const envelope = message.envelope as EncryptedEnvelope;
+        if (
+          !isEnvelope(envelope) ||
+          pairingReplay.has(envelope.messageId) ||
+          !matchesEnvelope(envelope, {
+            roomId,
+            direction: 'receiver-to-sender',
+            kind: 'pair-request',
+            expiresAt: 'null',
+          })
+        )
+          throw new Error('invalid pairing envelope');
         const body = await decryptJson<{ receiverNonce: string }>(pairingKey, envelope);
+        if (!/^[A-Za-z0-9_-]{16,64}$/.test(body.receiverNonce))
+          throw new Error('invalid receiver nonce');
+        pairingReplay.commit(envelope.messageId);
         pendingReceiverNonce = body.receiverNonce;
         canApprove = true;
         roomState = 'PAIR_PENDING';
+        save();
       } catch {
         error = 'Pairing authentication failed. Ask the Receiver to check the PIN.';
       }
@@ -195,12 +281,29 @@
     if (message.type === 'approved' && view === 'receiver' && pairingKey) {
       try {
         const envelope = message.envelope as EncryptedEnvelope;
+        if (
+          !isEnvelope(envelope) ||
+          pairingReplay.has(envelope.messageId) ||
+          !matchesEnvelope(envelope, {
+            roomId,
+            direction: 'sender-to-receiver',
+            kind: 'pair-response',
+            expiresAt: 'null',
+          })
+        )
+          throw new Error('invalid approval envelope');
         const body = await decryptJson<{
           approved: boolean;
           receiverNonce: string;
           senderNonce: string;
         }>(pairingKey, envelope);
-        if (body.receiverNonce !== pendingReceiverNonce || !body.approved) throw new Error();
+        if (
+          body.receiverNonce !== pendingReceiverNonce ||
+          !body.approved ||
+          !/^[A-Za-z0-9_-]{16,64}$/.test(body.senderNonce)
+        )
+          throw new Error();
+        pairingReplay.commit(envelope.messageId);
         senderNonce = body.senderNonce;
         keys = await deriveSessionKeys(pairingKey, roomId, pendingReceiverNonce, senderNonce);
         credential = String(message.credential);
@@ -213,21 +316,30 @@
       return;
     }
     if (message.type === 'rejected') {
-      error = 'The Sender rejected this pairing request.';
-      receiverView = 'PIN';
+      error = 'The Sender rejected this pairing request. Enter the new PIN to try again.';
+      receiverView = 'REJOINING';
+      pin = '';
+      pendingReceiverNonce = '';
+      credential = '';
+      rejectedClose = true;
+      save();
       return;
     }
+    if (message.type === 'ack') finishMutation(message.requestId, true);
     if (message.type === 'ack' && message.state) roomState = String(message.state);
     if (message.type === 'ack' && message.deadline) deadline = Number(message.deadline);
     if (message.type === 'resumed') {
+      restoring = false;
+      restoreCommand = null;
       roomState = String(message.state);
       deadline = Number(message.deadline);
       if (view === 'receiver') receiverView = 'PAIRED';
+      if (view === 'sender' && roomState === 'WAITING' && keys) await rotatePin();
       for (const envelope of message.items as EncryptedEnvelope[]) await receiveItem(envelope);
       return;
     }
     if (message.type === 'item') await receiveItem(message.envelope as EncryptedEnvelope);
-    if (message.type === 'revoked') items = items.filter((item) => item.id !== message.itemId);
+    if (message.type === 'revoked') await receiveRevocation(message);
     if (message.type === 'room_ended') {
       clear();
       view = 'start';
@@ -237,7 +349,14 @@
   async function receiveItem(envelope: EncryptedEnvelope) {
     if (
       !keys ||
-      !replay.accept(envelope.messageId) ||
+      !isEnvelope(envelope) ||
+      itemReplay.has(envelope.messageId) ||
+      !matchesEnvelope(envelope, {
+        roomId,
+        direction: 'sender-to-receiver',
+        kind: 'item',
+        expiresAt: 'present',
+      }) ||
       envelope.expiresAt === null ||
       envelope.expiresAt <= Date.now()
     )
@@ -246,6 +365,7 @@
       const item = await decryptJson<Item & Record<string, unknown>>(keys.item, envelope);
       if (
         item.expiresAt !== envelope.expiresAt ||
+        item.id !== envelope.messageId ||
         typeof item.id !== 'string' ||
         typeof item.label !== 'string' ||
         typeof item.value !== 'string' ||
@@ -255,28 +375,57 @@
         new TextEncoder().encode(JSON.stringify(item)).length > MAX_PLAINTEXT_BYTES
       )
         return;
+      itemReplay.commit(envelope.messageId);
       items = [...items.filter((old) => old.id !== item.id), item];
     } catch {
       error = 'An encrypted item failed authentication.';
     }
   }
-  async function sendItem(label: string, value: string, ttl: number) {
-    if (!keys || ![30, 60, 120, 300].includes(ttl)) return;
+  async function sendItem(label: string, value: string, ttl: number): Promise<boolean> {
+    if (!keys || ![30, 60, 120, 300].includes(ttl)) return false;
     const createdAt = Date.now(),
       expiresAt = createdAt + ttl * 1000,
       id = randomId();
     const item: Item = { id, label, value, createdAt, expiresAt, ttl };
-    if (new TextEncoder().encode(JSON.stringify(item)).length > MAX_PLAINTEXT_BYTES) {
+    const fields = {
+      roomId,
+      messageId: id,
+      direction: 'sender-to-receiver' as const,
+      kind: 'item' as const,
+      expiresAt,
+    };
+    if (encodePlaintext(fields, item).length > MAX_PLAINTEXT_BYTES) {
       error = 'The complete item plaintext exceeds 64 KiB.';
-      return;
+      return false;
     }
-    const envelope = await encryptJson(
-      keys.item,
-      { roomId, direction: 'sender-to-receiver', kind: 'item', expiresAt },
-      item,
-    );
-    send({ type: 'item', envelope, requestId: request() });
+    const envelope = await encryptJson(keys.item, fields, item);
+    if (!(await sendMutation({ type: 'item', envelope }))) {
+      error = 'The Relay did not accept this item. Your input has been preserved.';
+      return false;
+    }
+    itemReplay.commit(id);
     items = [...items, item];
+    return true;
+  }
+  async function receiveRevocation(message: Record<string, unknown>): Promise<void> {
+    if (!keys || typeof message.itemId !== 'string') return;
+    const envelope = message.envelope as EncryptedEnvelope;
+    const direction = view === 'sender' ? 'receiver-to-sender' : 'sender-to-receiver';
+    const key = view === 'sender' ? keys.receiverControl : keys.senderControl;
+    if (
+      !isEnvelope(envelope) ||
+      controlReplay.has(envelope.messageId) ||
+      !matchesEnvelope(envelope, { roomId, direction, kind: 'control', expiresAt: 'null' })
+    )
+      return;
+    try {
+      const body = await decryptJson<{ itemId: string }>(key, envelope);
+      if (body.itemId !== message.itemId) throw new Error('control item mismatch');
+      controlReplay.commit(envelope.messageId);
+      items = items.filter((item) => item.id !== body.itemId);
+    } catch {
+      error = 'A control message failed authentication.';
+    }
   }
   async function rotatePin() {
     pin = generatePin();
@@ -291,9 +440,22 @@
     send({ type: 'reject', requestId: request() });
     await rotatePin();
   }
-  function revoke(id: string) {
-    send({ type: 'revoke', itemId: id, requestId: request() });
-    items = items.filter((item) => item.id !== id);
+  async function revoke(id: string): Promise<void> {
+    if (!keys) return;
+    const sender = view === 'sender';
+    const envelope = await encryptJson(
+      sender ? keys.senderControl : keys.receiverControl,
+      {
+        roomId,
+        direction: sender ? 'sender-to-receiver' : 'receiver-to-sender',
+        kind: 'control',
+        expiresAt: null,
+      },
+      { itemId: id },
+    );
+    if (await sendMutation({ type: 'revoke', itemId: id, envelope }))
+      items = items.filter((item) => item.id !== id);
+    else error = 'The Relay did not acknowledge revocation.';
   }
   function end() {
     send({ type: 'end', requestId: request() });

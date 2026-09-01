@@ -3,8 +3,13 @@ export function addressGroup(address: string): string {
   const clean = address.replace(/^::ffff:/, '').split('%')[0] ?? '';
   if (isIP(clean) === 4) return clean;
   if (isIP(clean) === 6) {
-    const parts = clean.split(':');
-    return `${parts.slice(0, 4).join(':')}::/64`;
+    const [leftText, rightText] = clean.toLowerCase().split('::');
+    const left = leftText ? leftText.split(':') : [];
+    const right = rightText ? rightText.split(':') : [];
+    const missing = 8 - left.length - right.length;
+    const parts = rightText === undefined ? left : [...left, ...Array(missing).fill('0'), ...right];
+    const prefix = parts.slice(0, 4).map((part) => Number.parseInt(part || '0', 16).toString(16));
+    return `${prefix.join(':')}::/64`;
   }
   return 'unknown';
 }

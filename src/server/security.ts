@@ -20,7 +20,7 @@ export function securityHeaders(response: ServerResponse, path: string): void {
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
   response.setHeader(
     'Permissions-Policy',
-    'camera=(), microphone=(), geolocation=(), payment=(), usb=()',
+    'accelerometer=(), ambient-light-sensor=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), speaker-selection=(), usb=(), web-share=(), xr-spatial-tracking=()',
   );
   response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   response.setHeader(
@@ -29,9 +29,16 @@ export function securityHeaders(response: ServerResponse, path: string): void {
   );
 }
 export function sourceAddress(request: IncomingMessage): string {
-  if (process.env.TRUST_PROXY === '1') {
+  const remote = request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown';
+  const trusted = new Set(
+    (process.env.TRUSTED_PROXY_ADDRESSES ?? '')
+      .split(',')
+      .map((address) => address.trim().replace(/^::ffff:/, ''))
+      .filter(Boolean),
+  );
+  if (process.env.TRUST_PROXY === '1' && trusted.has(remote)) {
     const forwarded = request.headers['x-forwarded-for'];
     if (typeof forwarded === 'string') return forwarded.split(',')[0]?.trim() ?? 'unknown';
   }
-  return request.socket.remoteAddress ?? 'unknown';
+  return remote;
 }

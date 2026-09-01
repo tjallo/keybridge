@@ -68,3 +68,61 @@ test('sender resume restores prior active state', () => {
   assert.equal(r.state, 'PAIRED');
   assert.throws(() => r.resume('sender', r.senderCredential, 1004), /room_unavailable/);
 });
+
+test('both roles reconnect in either disconnect order with independent grace', () => {
+  for (const order of [
+    ['sender', 'receiver'],
+    ['receiver', 'sender'],
+  ] as const) {
+    const r = room();
+    r.reserve(1000);
+    const receiverCredential = r.approve(1001);
+    r.disconnect(order[0], 1010);
+    r.disconnect(order[1], 1020);
+    assert.equal(r.state, 'SENDER_GRACE');
+    r.resume('sender', r.senderCredential, 1030);
+    assert.equal(r.state, 'RECEIVER_GRACE');
+    r.resume('receiver', receiverCredential, 1040);
+    assert.equal(r.state, 'PAIRED');
+  }
+});
+
+test('receiver grace still expires while sender is disconnected', () => {
+  const r = room();
+  r.reserve(1000);
+  const receiverCredential = r.approve(1001);
+  r.disconnect('receiver', 1010);
+  r.disconnect('sender', 1020);
+  r.tick(1010 + GRACE_MS);
+  assert.throws(
+    () => r.resume('receiver', receiverCredential, 1010 + GRACE_MS),
+    /room_unavailable/,
+  );
+  r.resume('sender', r.senderCredential, 1010 + GRACE_MS);
+  assert.equal(r.state, 'WAITING');
+});
+
+test('extend cannot resurrect a room at or after its deadline', () => {
+  for (const now of [1000 + ROOM_TTL_MS, 1001 + ROOM_TTL_MS]) {
+    const r = room();
+    assert.throws(() => r.extend(now), /expired/);
+    assert.equal(r.state, 'ENDED');
+  }
+});
+
+test('one reserved receiver can send only one pairing frame', () => {
+  const r = room();
+  r.reserve(1000);
+  r.recordPairFrame();
+  assert.throws(() => r.recordPairFrame(), /rate_limited/);
+});
+
+test('completed request outcomes survive reconnect and are not repeated', () => {
+  const r = room();
+  const result = { type: 'ack', requestId: 'AAAAAAAAAAAAAAAAAAAAAA', deadline: r.deadline };
+  r.completeRequest(result.requestId, result);
+  assert.deepEqual(r.requestResult(result.requestId), result);
+  r.disconnect('sender', 1001);
+  r.resume('sender', r.senderCredential, 1002);
+  assert.deepEqual(r.requestResult(result.requestId), result);
+});

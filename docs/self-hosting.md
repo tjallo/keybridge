@@ -7,7 +7,7 @@ docker compose build
 docker compose up
 ```
 
-The example binds `127.0.0.1:3000` only for local smoke testing. Production must expose no application port, proxy HTTPS and WebSocket upgrades from Caddy, and set `PUBLIC_ORIGIN` to the exact public HTTPS origin. Set `TRUST_PROXY=1` only when Caddy is the container's sole network peer; otherwise forwarding headers are ignored.
+The example binds `127.0.0.1:3000` only for local smoke testing. Production must expose no application port, proxy HTTPS and WebSocket upgrades from Caddy, and set `PUBLIC_ORIGIN` to the exact public HTTPS origin. Set `TRUST_PROXY=1` only when Caddy is the container's sole network peer and set `TRUSTED_PROXY_ADDRESSES` to Caddy's explicit comma-separated container addresses. Forwarding headers from every other socket peer are ignored. Keep Caddy and KeyBridge on a deployment network that untrusted containers cannot join.
 
 The runtime runs as the non-root `node` user, supports a read-only root, uses no persistent volume, drops capabilities, and enables `no-new-privileges`. `/health` returns only `ok`. A restart or termination ends every Room and removes all ciphertext.
 

@@ -7,83 +7,123 @@ export const ROOM_TTL_MS = 600_000,
   GRACE_MS = 60_000,
   PENDING_MS = 60_000;
 const MAX_ITEMS = 10,
-  MAX_ROOM_BYTES = 256 * 1024;
+  MAX_ROOM_BYTES = 256 * 1024,
+  MAX_ROOM_COMMANDS = 4096;
 const token = () => randomBytes(24).toString('base64url');
 export interface StoredItem {
   envelope: EncryptedEnvelope;
   bytes: number;
 }
+type ActiveState = 'WAITING' | 'PAIR_PENDING' | 'PAIRED';
+
 export class Room {
   readonly id: string;
   readonly addressGroup: string;
   readonly senderCredential = token();
-  state: RoomState = 'WAITING';
   deadline: number;
-  priorState: RoomState = 'WAITING';
+  activeState: ActiveState = 'WAITING';
+  ended = false;
+  senderConnected = true;
+  receiverConnected = false;
+  senderGraceUntil: number | null = null;
+  receiverGraceUntil: number | null = null;
   receiverCredential: string | null = null;
   pendingSince: number | null = null;
-  graceUntil: number | null = null;
   readonly items = new Map<string, StoredItem>();
   readonly requests = new Map<string, unknown>();
   retainedBytes = 0;
   pendingAttempts = 0;
+  pairFrames = 0;
+
   constructor(id: string, addressGroup: string, now: number) {
     this.id = id;
     this.addressGroup = addressGroup;
     this.deadline = now + ROOM_TTL_MS;
   }
+
+  get state(): RoomState {
+    if (this.ended) return 'ENDED';
+    if (!this.senderConnected) return 'SENDER_GRACE';
+    if (this.activeState === 'PAIRED' && !this.receiverConnected) return 'RECEIVER_GRACE';
+    return this.activeState;
+  }
+
   reserve(now: number): void {
     this.tick(now);
     if (this.state !== 'WAITING') throw new Error('room_unavailable');
     if (this.pendingAttempts >= 10) throw new Error('rate_limited');
     this.pendingAttempts++;
-    this.state = 'PAIR_PENDING';
+    this.pairFrames = 0;
+    this.activeState = 'PAIR_PENDING';
+    this.receiverConnected = true;
     this.pendingSince = now;
   }
+
+  recordPairFrame(): void {
+    if (this.activeState !== 'PAIR_PENDING' || !this.receiverConnected)
+      throw new Error('not_allowed');
+    if (this.pairFrames >= 1) throw new Error('rate_limited');
+    this.pairFrames++;
+  }
+
   reject(now: number): void {
-    if (this.state !== 'PAIR_PENDING') throw new Error('not_allowed');
-    this.state = 'WAITING';
+    if (this.activeState !== 'PAIR_PENDING') throw new Error('not_allowed');
+    this.activeState = 'WAITING';
     this.pendingSince = null;
+    this.receiverConnected = false;
     this.receiverCredential = null;
     this.tick(now);
   }
+
   approve(now: number): string {
-    if (this.state !== 'PAIR_PENDING') throw new Error('not_allowed');
-    this.state = 'PAIRED';
+    this.tick(now);
+    if (this.activeState !== 'PAIR_PENDING' || !this.receiverConnected)
+      throw new Error('not_allowed');
+    this.activeState = 'PAIRED';
     this.pendingSince = null;
     return (this.receiverCredential = token());
   }
+
   disconnect(role: 'sender' | 'receiver', now: number): void {
-    if (this.state === 'ENDED') return;
+    if (this.ended) return;
     if (role === 'sender') {
-      this.priorState = this.state;
-      this.state = 'SENDER_GRACE';
-      this.graceUntil = now + GRACE_MS;
-    } else if (this.state === 'PAIR_PENDING') {
-      this.reject(now);
-    } else if (this.state === 'PAIRED') {
-      this.state = 'RECEIVER_GRACE';
-      this.graceUntil = now + GRACE_MS;
+      if (!this.senderConnected) return;
+      this.senderConnected = false;
+      this.senderGraceUntil = now + GRACE_MS;
+      return;
     }
+    if (!this.receiverConnected) return;
+    this.receiverConnected = false;
+    if (this.activeState === 'PAIR_PENDING') this.reject(now);
+    else if (this.activeState === 'PAIRED') this.receiverGraceUntil = now + GRACE_MS;
   }
+
   resume(role: 'sender' | 'receiver', credential: string, now: number): void {
     this.tick(now);
     if (role === 'sender') {
-      if (credential !== this.senderCredential || this.state !== 'SENDER_GRACE')
+      if (credential !== this.senderCredential || this.senderConnected || this.ended)
         throw new Error('room_unavailable');
-      this.state = this.priorState === 'SENDER_GRACE' ? 'WAITING' : this.priorState;
-      this.graceUntil = null;
+      this.senderConnected = true;
+      this.senderGraceUntil = null;
       return;
     }
-    if (credential !== this.receiverCredential || this.state !== 'RECEIVER_GRACE')
+    if (
+      credential !== this.receiverCredential ||
+      this.receiverConnected ||
+      this.activeState !== 'PAIRED' ||
+      this.ended
+    )
       throw new Error('room_unavailable');
-    this.state = 'PAIRED';
-    this.graceUntil = null;
+    this.receiverConnected = true;
+    this.receiverGraceUntil = null;
   }
+
   extend(now: number): void {
-    if (this.state === 'ENDED') throw new Error('expired');
+    this.tick(now);
+    if (this.ended) throw new Error('expired');
     this.deadline = now + ROOM_TTL_MS;
   }
+
   store(envelope: EncryptedEnvelope, bytes: number, now: number): void {
     this.tick(now);
     if (this.state !== 'PAIRED') throw new Error('not_allowed');
@@ -94,6 +134,7 @@ export class Room {
     this.retainedBytes += bytes;
     this.extend(now);
   }
+
   revoke(id: string): void {
     const item = this.items.get(id);
     if (item) {
@@ -101,34 +142,61 @@ export class Room {
       this.items.delete(id);
     }
   }
+
+  requestResult(id: string): unknown | undefined {
+    return this.requests.get(id);
+  }
+
+  completeRequest(id: string, result: unknown): void {
+    if (this.requests.has(id)) return;
+    if (this.requests.size >= MAX_ROOM_COMMANDS) throw new Error('busy');
+    this.requests.set(id, result);
+  }
+
+  ensureCommandCapacity(): void {
+    if (this.requests.size >= MAX_ROOM_COMMANDS) throw new Error('busy');
+  }
+
   snapshot(now: number): EncryptedEnvelope[] {
     this.tick(now);
-    return [...this.items.values()].map((i) => i.envelope);
+    return [...this.items.values()].map((item) => item.envelope);
   }
+
   tick(now: number): void {
+    if (this.ended) return;
     for (const [id, item] of this.items)
       if (item.envelope.expiresAt !== null && item.envelope.expiresAt <= now) this.revoke(id);
     if (
-      this.state === 'PAIR_PENDING' &&
+      this.activeState === 'PAIR_PENDING' &&
       this.pendingSince !== null &&
       now - this.pendingSince >= PENDING_MS
     )
       this.reject(now);
-    if (this.state === 'SENDER_GRACE' && this.graceUntil !== null && now >= this.graceUntil)
+    if (!this.senderConnected && this.senderGraceUntil !== null && now >= this.senderGraceUntil) {
       this.end();
-    if (this.state === 'RECEIVER_GRACE' && this.graceUntil !== null && now >= this.graceUntil) {
+      return;
+    }
+    if (
+      this.activeState === 'PAIRED' &&
+      !this.receiverConnected &&
+      this.receiverGraceUntil !== null &&
+      now >= this.receiverGraceUntil
+    ) {
       for (const id of this.items.keys()) this.revoke(id);
       this.receiverCredential = null;
-      this.state = 'WAITING';
-      this.graceUntil = null;
+      this.receiverGraceUntil = null;
+      this.activeState = 'WAITING';
     }
     if (now >= this.deadline) this.end();
   }
+
   end(): void {
-    this.state = 'ENDED';
+    this.ended = true;
     this.items.clear();
+    this.requests.clear();
     this.retainedBytes = 0;
     this.receiverCredential = null;
-    this.graceUntil = null;
+    this.senderGraceUntil = null;
+    this.receiverGraceUntil = null;
   }
 }

@@ -17,6 +17,10 @@ test('protocol accepts bounded v1 create and rejects malformed or unsupported fr
     parseMessage(JSON.stringify({ version: 1, type: 'revoke', itemId: 'short', requestId: id })),
     null,
   );
+  assert.equal(
+    parseMessage(JSON.stringify({ version: 1, type: 'revoke', itemId: id, requestId: id })),
+    null,
+  );
 });
 test('frozen envelope header tuple order', () => {
   const envelope = {

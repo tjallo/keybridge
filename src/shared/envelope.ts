@@ -46,6 +46,24 @@ export function isEnvelope(value: unknown): value is EncryptedEnvelope {
     typeof e.nonce === 'string' &&
     /^[A-Za-z0-9_-]{16}$/.test(e.nonce) &&
     typeof e.ciphertext === 'string' &&
+    /^[A-Za-z0-9_-]+$/.test(e.ciphertext) &&
     e.ciphertext.length <= MAX_ENVELOPE_BYTES
+  );
+}
+
+export function matchesEnvelope(
+  envelope: EncryptedEnvelope,
+  expected: {
+    roomId: string;
+    direction: Direction;
+    kind: EnvelopeKind;
+    expiresAt: 'null' | 'present';
+  },
+): boolean {
+  return (
+    envelope.roomId === expected.roomId &&
+    envelope.direction === expected.direction &&
+    envelope.kind === expected.kind &&
+    (expected.expiresAt === 'null' ? envelope.expiresAt === null : envelope.expiresAt !== null)
   );
 }

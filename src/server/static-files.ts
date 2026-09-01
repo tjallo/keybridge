@@ -14,13 +14,20 @@ export function serveStatic(
   response: ServerResponse,
   root = 'dist',
 ): void {
-  const path = new URL(request.url ?? '/', 'http://internal').pathname;
+  let path: string;
+  try {
+    path = decodeURIComponent(new URL(request.url ?? '/', 'http://internal').pathname);
+  } catch {
+    securityHeaders(response, '/');
+    response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Bad request');
+    return;
+  }
   securityHeaders(response, path);
   if (path === '/health') {
     response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' }).end('ok');
     return;
   }
-  const requested = normalize(decodeURIComponent(path)).replace(/^(\.\.(\/|\\|$))+/, '');
+  const requested = normalize(path).replace(/^(\.\.(\/|\\|$))+/, '');
   let file = join(root, requested === '/' ? 'index.html' : requested);
   try {
     if (!statSync(file).isFile()) file = join(root, 'index.html');

@@ -98,30 +98,27 @@ export async function deriveSessionKeys(
 }
 export async function encryptJson(
   key: CryptoKey,
-  fields: { roomId: string; direction: Direction; kind: EnvelopeKind; expiresAt: number | null },
+  fields: {
+    roomId: string;
+    direction: Direction;
+    kind: EnvelopeKind;
+    expiresAt: number | null;
+    messageId?: string;
+  },
   body: object,
 ): Promise<EncryptedEnvelope> {
   const nonce = randomBytes(12);
   const envelope: EncryptedEnvelope = {
     version: 1,
     roomId: fields.roomId,
-    messageId: randomId(),
+    messageId: fields.messageId ?? randomId(),
     direction: fields.direction,
     kind: fields.kind,
     expiresAt: fields.expiresAt,
     nonce: base64url(nonce),
     ciphertext: '',
   };
-  const plaintext = encoder.encode(
-    JSON.stringify({
-      ...body,
-      roomId: envelope.roomId,
-      messageId: envelope.messageId,
-      direction: envelope.direction,
-      kind: envelope.kind,
-      expiresAt: envelope.expiresAt,
-    }),
-  );
+  const plaintext = encodePlaintext(envelope, body);
   const encrypted = await crypto.subtle.encrypt(
     {
       name: 'AES-GCM',
@@ -134,6 +131,22 @@ export async function encryptJson(
   envelope.ciphertext = base64url(new Uint8Array(encrypted));
   return envelope;
 }
+export function encodePlaintext(
+  envelope: Pick<EncryptedEnvelope, 'roomId' | 'messageId' | 'direction' | 'kind' | 'expiresAt'>,
+  body: object,
+): Uint8Array<ArrayBuffer> {
+  return encoder.encode(
+    JSON.stringify({
+      ...body,
+      roomId: envelope.roomId,
+      messageId: envelope.messageId,
+      direction: envelope.direction,
+      kind: envelope.kind,
+      expiresAt: envelope.expiresAt,
+    }),
+  );
+}
+
 export async function decryptJson<T>(key: CryptoKey, envelope: EncryptedEnvelope): Promise<T> {
   const plaintext = await crypto.subtle.decrypt(
     {
@@ -151,9 +164,15 @@ export async function decryptJson<T>(key: CryptoKey, envelope: EncryptedEnvelope
 }
 export class ReplayGuard {
   readonly #seen = new Set<string>();
-  accept(id: string): boolean {
-    if (this.#seen.has(id)) return false;
+  has(id: string): boolean {
+    return this.#seen.has(id);
+  }
+  commit(id: string): boolean {
+    if (this.#seen.has(id) || this.#seen.size >= 4096) return false;
     this.#seen.add(id);
     return true;
+  }
+  accept(id: string): boolean {
+    return this.commit(id);
   }
 }
