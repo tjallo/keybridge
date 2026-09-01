@@ -1,0 +1,10 @@
+services:
+  keybridge:
+    build: .
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    ports: ["127.0.0.1:3000:3000"]
+    healthcheck: {test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:3000/health], interval: 10s, timeout: 3s, retries: 3}
+    stop_grace_period: 10s

@@ -1,0 +1,2 @@
+<script lang="ts">export let onCreate:()=>void; export let onSecurity:()=>void;</script>
+<section class="panel hero"><p class="eyebrow">End-to-end encrypted relay</p><h1>Move a secret to your phone.</h1><p>Create a temporary room, scan its pairing link, enter the separate PIN, and approve the Receiver.</p><button class="primary" onclick={onCreate}>Create room</button><button class="link" onclick={onSecurity}>Security &amp; transparency</button></section>
