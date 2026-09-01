@@ -2,615 +2,896 @@
 
 ## Goal
 
-KeyBridge transfers short-lived text secrets and files from one host to one Android client on a trusted local network.
+KeyBridge transfers short-lived text secrets from a desktop sender to one phone receiver through a public relay.
 
-The host runs an installed Node.js 26 command. One Svelte 5 web application serves the host dashboard and client page. The process keeps session state in memory and exits when the session ends.
+The sender opens `keybridge.tjallo.nl`, creates a room, and shows a QR code. The phone scans the QR code, enters a separate PIN, and waits for sender approval. The sender can then send passwords, tokens, recovery codes, or configuration text.
+
+The relay stores room state and ciphertext in memory. Browser code encrypts each secret before it reaches the relay.
+
+## Product terms
+
+Use these terms in code, the protocol, and the interface:
+
+- **Sender:** The desktop browser that creates a room and sends secrets.
+- **Receiver:** The phone browser that scans the QR code and receives secrets.
+- **Relay:** The public Node.js service that connects both browsers.
+- **Room:** One temporary sender and receiver session.
+- **Pairing link:** The URL that contains a room identifier and room key in its fragment.
+- **PIN:** The separate eight-character code shown by the sender.
+
+Avoid the term **host** in protocol code. It can mean the sender computer, deployment server, or HTTP host name.
 
 ## Confirmed product decisions
 
 | Area | v1 decision |
 | --- | --- |
-| Client | A current Chromium-based browser on Android |
-| Host | Linux, macOS, or Windows with Node.js 26 |
-| Startup | Run the installed `keybridge` command and open the default browser |
-| Transport | One HTTPS and WebSocket Secure listener on a random port |
-| Certificate | Generate a self-signed certificate in memory for each launch |
-| Pairing | Use a QR capability or an eight-character manual PIN |
-| Approval | Require host approval and a matching short code |
-| Client limit | Permit one pending or paired client |
-| Reconnect | Reserve the client slot for 60 seconds |
-| Session | End after 10 minutes of inactivity |
-| Session refresh | Reset the timer after **Send** or **Extend** |
-| Text | Send immutable labeled UTF-8 text |
-| Files | Relay opaque files up to 1 GiB without disk storage |
-| Item TTL | Use 60 seconds by default and start at **Send** |
-| Client display | Hide text values until **Reveal** or **Copy** |
-| Persistence | Store only the reconnect token in client `sessionStorage` |
-
-The session timer pauses while file bytes make progress. A file transfer has a 30-second stall limit and a 15-minute total limit.
+| Public address | `keybridge.tjallo.nl` |
+| Sender | A current desktop browser |
+| Receiver | A current Chromium-based browser on Android |
+| Direction | Sender to receiver only |
+| Access | Public, without accounts |
+| Room limit | One receiver per room; many rooms per relay |
+| Front end | Svelte 5 with Vite, without SvelteKit |
+| Relay | Node.js 26 with WebSockets |
+| Transport | Public HTTPS and WebSocket Secure through Caddy |
+| Payload protection | Browser end-to-end encryption with Web Crypto |
+| Pairing | QR or copied full link, separate PIN, then sender approval |
+| Text | Immutable labeled UTF-8 text only |
+| Files | Excluded |
+| Item TTL | 60 seconds by default, starting when the sender sends |
+| Room TTL | 10 minutes of inactivity |
+| Reconnect | 60-second grace period |
+| Persistence | Room keys and reconnect credentials in `sessionStorage` only |
+| Development | Docker Compose first; no host Node.js installation required |
+| Deployment | One application container behind the existing Caddy container |
 
 ## V1 exclusions
 
 V1 does not include these features:
 
-- more than one client;
-- client-to-host transfer;
-- accounts, cloud services, or an internet relay;
-- service discovery or multicast DNS;
+- file, image, directory, or binary transfer;
+- receiver-to-sender secret transfer;
+- bidirectional rooms;
+- more than one receiver in a room;
+- accounts, profiles, or contact lists;
 - a persistent vault or transfer history;
+- offline delivery or a message queue;
 - bulk import and export;
 - a Progressive Web App or background service;
-- file previews, archive extraction, or content execution;
-- HTTP range requests or partial file resume;
-- custom payload cryptography.
+- third-party analytics, scripts, fonts, or content delivery networks;
+- custom transport security or a self-signed certificate;
+- application-layer forward secrecy;
+- multiple relay instances or shared room storage.
 
-## Security model
+## Trust and security claims
 
-### Trusted components
+### Supported claim
 
-V1 trusts the host, the Android device, their browsers, and the local network. V1 excludes malicious local participants, Address Resolution Protocol spoofing, active local interception, and a compromised router.
+KeyBridge can make this bounded claim:
 
-The temporary self-signed certificate encrypts HTTPS and WebSocket traffic after each browser accepts the warning. The certificate does not authenticate the host. An active attacker can present another certificate and the same warning.
+> The published browser client encrypts secret payloads before transmission. The relay does not receive the room key, PIN, or plaintext.
 
-The user must accept a certificate warning on both the host and Android browser. Managed Android devices can block this action. The release test matrix must confirm the exact Chrome flow.
+The relay sees metadata. This metadata includes network addresses, connection times, room associations, ciphertext sizes, item expiration times, and protocol events.
 
-### Protections inside the threat model
+### Browser bootstrap limit
 
-KeyBridge limits accidental exposure with these controls:
+A public web application cannot remove trust in the server that supplies its JavaScript. A malicious operator or compromised application container can serve modified code that captures room keys and plaintext.
 
-- The operating system assigns a new port at each launch.
-- The QR code contains a 256-bit, one-use pairing token.
-- The URL stores the token in its fragment, not in the HTTP request target.
-- The client removes the fragment from browser history after page startup.
-- The host approves the first pending client.
-- Both screens show the same short confirmation code.
-- Pairing credentials expire and rotate after two minutes.
-- A consumed credential cannot create another pending client.
-- A new process creates new pairing and reconnect credentials.
-- The server enforces item, transfer, frame, and active-list limits.
-- The server sends cache prevention and content security headers.
-- The server rejects host controls from non-loopback connections.
-- The server rejects unexpected WebSocket origins and HTTP host names.
+Open source and reproducible artifacts help users audit the application. They do not let a browser verify the first page against a hostile server.
 
-The random port reduces accidental reuse. The port does not provide authentication.
+KeyBridge must use **end-to-end encrypted relay** or **zero-knowledge payload relay** for this model. User-facing text must not claim full trustlessness or protection from a malicious code-serving server.
 
-### Residual exposure
+A separately installed and signed application or browser extension would reduce this bootstrap risk. V1 keeps zero-install browser access and accepts the risk.
 
-KeyBridge cannot remove these copies:
+### Relay powers
 
-- text that the user copied to the Android clipboard;
-- a file that Chrome downloaded or partly downloaded;
-- screenshots, camera images, browser diagnostics, or operating-system dumps;
-- copies retained by JavaScript engines, TLS libraries, or garbage collection;
-- a scanned QR URL retained by an external camera application.
+A malicious relay can perform these actions:
 
-Expiration and revocation control the KeyBridge copy only. The client must show this fact before a file download.
+- refuse or delay connections;
+- drop, duplicate, or reorder encrypted messages;
+- retain ciphertext and metadata after expiry;
+- lie about room availability;
+- serve modified browser code if it also controls the application response.
+
+Authenticated encryption detects ciphertext modification. Client-side message identifiers and expiration times detect stale replay. No browser protocol can force the relay to delete stored bytes.
+
+### Endpoint limits
+
+KeyBridge does not protect against these conditions:
+
+- a compromised sender or receiver;
+- a malicious browser extension;
+- screen capture or shoulder surfing;
+- copied clipboard content;
+- a pairing link and PIN that leak together;
+- browser diagnostics, memory dumps, swap, or garbage-collector copies.
+
+## Public pairing design
+
+### Room creation
+
+The sender browser generates all pairing secrets with `crypto.getRandomValues()`:
+
+- a 16-byte room identifier;
+- a 32-byte room key;
+- an eight-character PIN;
+- sender connection and request identifiers.
+
+The PIN uses uppercase letters and digits without `0`, `1`, `I`, `L`, or `O`. The sender displays the PIN as `XXXX-XXXX`.
+
+The pairing link places the room identifier and room key in the URL fragment. Browsers do not send a URL fragment in the HTTP request target. The Svelte application removes the fragment with `history.replaceState()` after import.
+
+The relay receives the room identifier through the WebSocket protocol. The relay never receives the room key or PIN.
+
+### Separate link and PIN
+
+The QR code and copied pairing link contain the same high-entropy capability. The PIN stays outside that link.
+
+Users should send a copied link and PIN through separate channels when practical. A QR scan already provides a separate visual channel for the PIN.
+
+The PIN contributes to browser key derivation. The phone does not send the PIN as plaintext or encrypted data. A correct PIN lets both browsers derive the same pairing key.
+
+A party with the full pairing link can attempt offline PIN guesses against captured pairing ciphertext. The eight-character alphabet provides about 40 bits of PIN entropy. The short room lifetime and separate-link workflow limit this risk, but they do not remove it.
+
+### Pairing flow
+
+1. The sender creates a room.
+2. The sender browser registers the random room identifier with the relay.
+3. The sender displays the QR code, full link, and separate PIN.
+4. The receiver opens the link and removes its fragment from history.
+5. The receiver enters the PIN shown by the sender.
+6. The receiver derives the pairing key in its browser.
+7. The receiver sends an encrypted pairing request through the relay.
+8. The relay reserves the room receiver slot for 60 seconds.
+9. The sender decrypts the request with its locally derived pairing key.
+10. The sender selects **Approve** or **Reject**.
+11. The sender sends an encrypted approval response.
+12. Both browsers derive directional session keys.
+
+A wrong PIN produces an authentication failure in the sender browser. The relay sees a failed pending request but cannot distinguish a wrong PIN from malformed ciphertext.
+
+The sender must approve each receiver after successful PIN verification. Pairing success does not send an existing secret until approval completes.
+
+### Pairing contention
+
+The first receiver connection reserves the pending slot. Later receivers receive a generic busy response.
+
+A rejected, disconnected, or expired pending receiver releases the slot. The sender browser creates a new PIN after rejection. The sender can also end the room and create a new pairing link.
+
+The relay limits pending attempts per room and source address. These limits reduce online guessing and denial of service. They do not provide account-grade abuse prevention.
+
+## Browser cryptography
+
+### Primitive selection
+
+Use the browser Web Crypto API only:
+
+- HKDF with SHA-256 for key derivation;
+- AES-256-GCM for authenticated encryption;
+- `crypto.getRandomValues()` for keys, identifiers, and 96-bit nonces.
+
+Do not implement a cipher, hash, random generator, or Password-Authenticated Key Exchange protocol. Do not add a payload cryptography package in v1.
+
+### Key derivation
+
+The pairing key depends on these inputs:
+
+- the 256-bit room key from the URL fragment;
+- the room identifier;
+- the normalized separate PIN;
+- a protocol-specific HKDF information string.
+
+PIN normalization removes the hyphen and accepts eight uppercase alphabet characters only. It does not apply locale-sensitive or Unicode normalization.
+
+A successful pairing request contains a random receiver nonce inside its encrypted body. The approval response contains a random sender nonce.
+
+Both browsers derive separate session keys from the pairing key and both nonces:
+
+- a sender-to-receiver item key;
+- a receiver-to-sender control key;
+- a sender-to-receiver control key.
+
+Separate directional keys prevent nonce reuse across roles. Protocol-specific HKDF information strings prevent key reuse between pairing, item, and control messages.
+
+V1 does not use ephemeral Diffie-Hellman. If the pairing link and PIN leak later, a party that retained the handshake and ciphertext can derive the session keys. The security page must state this lack of forward secrecy.
+
+### Encrypted envelope
+
+Each encrypted envelope contains a bounded clear header:
+
+- protocol version;
+- room identifier;
+- message identifier;
+- direction;
+- expiration time when applicable;
+- 96-bit nonce;
+- ciphertext and authentication tag.
+
+The sender encodes the header as a fixed JSON tuple and supplies its UTF-8 bytes as AES-GCM additional authenticated data. The encrypted body duplicates security-relevant header fields. The receiver rejects a mismatch.
+
+Each encryption operation uses a fresh random nonce. The room message cap keeps random nonce collision risk negligible. Each browser tracks processed message identifiers and rejects a duplicate.
+
+The relay can read the header fields required for routing and expiry. The relay cannot alter those fields without causing authenticated decryption to fail.
+
+### Plaintext item
+
+An item plaintext contains:
+
+- an item identifier;
+- a label;
+- a UTF-8 text value;
+- a sender creation time;
+- an expiration time;
+- the selected TTL.
+
+The sender treats each item as immutable. A correction requires revocation and a new item.
 
 ## Architecture
 
-One Node.js process owns all server state. The process uses one HTTPS listener on an operating-system assigned port.
+### Production request path
 
-The listener binds to IPv4 wildcard. The host opens the dashboard through the loopback address. The QR code uses one selected LAN IPv4 address.
+The production request path is:
 
-The server has five direct responsibilities:
+```text
+Browser HTTPS/WSS
+        |
+        v
+Caddy on ports 80/443
+        |
+        v
+KeyBridge container on internal HTTP port 3000
+```
 
-1. Serve the two built Svelte applications.
-2. Handle the host and client WebSocket connections.
-3. Own the session state machine and its timers.
-4. Relay one file stream between the host and client.
-5. Shut down and release all state.
+Caddy terminates publicly trusted TLS. Caddy proxies normal HTTP requests and WebSocket upgrades to the KeyBridge container through the existing Compose network.
 
-The Svelte applications do not use a global state library. Each application owns one connection module and one top-level state object.
+The application container serves the built Svelte assets and owns the WebSocket relay. The container does not publish a host port in the homelab Compose file.
 
-### Server modules
+### Relay responsibilities
 
-- `cli.ts` parses arguments, starts the server, opens the browser, and handles signals.
-- `certificate.ts` creates the in-memory key and certificate.
-- `network.ts` finds LAN addresses and validates address selection.
-- `app-server.ts` creates the HTTPS server and dispatches HTTP routes.
-- `websockets.ts` validates upgrades, frames, origins, and connection roles.
-- `protocol.ts` defines message types, limits, and direct validators.
-- `session.ts` implements all session and item transitions.
-- `file-relay.ts` pairs upload and download streams and enforces transfer limits.
-- `security.ts` applies headers, loopback checks, host checks, and redacted errors.
+The Node.js relay has these direct responsibilities:
 
-`session.ts` must not own sockets or HTTP objects. Its methods accept an action and a server timestamp. Each method returns a typed result for the transport code.
+1. Serve the built Svelte application.
+2. Create and expire in-memory rooms.
+3. Enforce one sender and one receiver per room.
+4. Relay bounded encrypted envelopes.
+5. Retain unexpired item ciphertext for reconnect.
+6. Apply connection, room, frame, and memory limits.
+7. Shut down without writing room state.
 
-This boundary keeps state transitions testable without a framework or a generic event system.
+The relay does not import browser plaintext types or browser key-derivation code. Shared protocol types expose encrypted envelopes and public metadata only.
 
-## HTTPS and local networking
+### Svelte application
 
-### Listener startup
+One Svelte application handles three views:
 
-1. Read the active network interfaces.
-2. Keep non-loopback IPv4 addresses.
-3. Prefer private IPv4 addresses in the dashboard list.
-4. Generate a certificate for loopback and all detected addresses.
-5. Listen on port `0` to request an operating-system assigned port.
-6. Open the host URL through the loopback address.
-7. Show a selector if the host has more than one LAN address.
+- landing and room creation;
+- sender room controls;
+- receiver pairing and item cards.
 
-The certificate uses a short validity period with clock-skew allowance. The private key and certificate remain in process memory.
+The application selects a view from in-memory role state and the imported URL fragment. V1 needs no application router.
 
-An address change in the dashboard rotates the QR token and PIN. The server disables address changes while a pair request is pending or a client is paired.
+Svelte components render labels and values as text. The application does not use `{@html}`, Markdown rendering, or user-supplied styles.
 
-A network change after startup requires a process restart. V1 does not monitor interface changes.
+## Svelte framework decision
 
-### Route separation
+### Selected: Svelte 5 with Vite
 
-The server uses one port but separates privileges by route and source:
+Use `@sveltejs/vite-plugin-svelte` with a small manual Vite configuration.
 
-- `/host` and host assets require a loopback peer.
-- `/ws/host` requires a loopback peer and the exact host origin.
-- `/` and client assets allow a selected LAN origin.
-- `/ws/client` requires an allowed client origin.
-- Host upload routes require loopback, the host origin, and a one-use transfer token.
-- Client download routes require a one-use transfer token.
+Benefits:
 
-The server validates the `Host` and `Origin` headers before it upgrades a WebSocket. This check reduces cross-site WebSocket and Domain Name System rebinding risks.
+- Vite produces static HTML, JavaScript, and CSS for the relay to serve.
+- The application needs no server-side rendering.
+- The room state lives in browser memory and WebSockets.
+- One entry point supports all three views.
+- The dependency and convention surface stays small.
+- Vite supplies fast development builds and Hot Module Replacement.
 
-The server sends `Cache-Control: no-store` for HTML, JavaScript, application programming interface responses, and file responses. It also sends a strict Content Security Policy, `Referrer-Policy: no-referrer`, and MIME-sniffing protection.
+Costs:
 
-### Local network failures
+- KeyBridge must define its own small view-state model.
+- A future multi-page documentation site would need routing or another build target.
+- The project must configure response headers in the Node relay and Caddy.
 
-The dashboard must explain these common connection failures:
+### Alternative: SvelteKit with static output
 
-- The phone and host use different networks.
-- The access point isolates wireless clients.
-- A host firewall blocks the Node.js process.
-- The QR code contains the wrong adapter address.
-- Chrome policy blocks the certificate exception.
+SvelteKit static output would add filesystem routing, layouts, error pages, and prerendering. It would help if KeyBridge gained many public documentation or policy pages.
 
-KeyBridge does not fall back to plaintext HTTP.
+V1 has one application shell and no server-rendered data. SvelteKit would add routing conventions without reducing relay or cryptography code.
 
-## Pairing design
+### Alternative: SvelteKit with adapter-node
 
-### Credentials
+`@sveltejs/adapter-node` builds a standalone Node server. Its generated handler can run inside a custom Node server.
 
-The server creates two alternative credentials:
+KeyBridge would still need custom WebSocket upgrade handling, room state, limits, shutdown behavior, and proxy awareness. A custom server must also implement lifecycle settings that the default adapter server normally owns.
 
-- a 32-byte random QR token encoded with Base64 URL syntax;
-- an eight-character PIN in `XXXX-XXXX` form.
+This option couples page serving and relay lifecycle to SvelteKit without a matching v1 benefit.
 
-The PIN alphabet contains uppercase letters and digits without `0`, `1`, `I`, `L`, or `O`. A PIN has about 40 bits of entropy.
+### Bootstrap approach
 
-The host dashboard shows the manual client address next to the PIN. The QR code contains the selected HTTPS origin and the token in the URL fragment.
+Do not run `npx sv create` because it creates a SvelteKit project. Do not require `npm create vite` on the host.
 
-Both credentials expire after two minutes. The server rotates both credentials after expiry, manual rotation, rejection, or a failed pending request.
+Create the small Vite setup directly in the repository:
 
-The server permits five invalid PIN attempts per credential set. The fifth failure rotates both credentials. QR token comparison uses a constant-time byte comparison after strict decoding.
+- `package.json`;
+- `vite.config.ts`;
+- `index.html`;
+- TypeScript configuration;
+- `src/ui/main.ts`;
+- `src/ui/App.svelte`.
 
-### Approval flow
+Docker installs and runs all JavaScript dependencies. A developer needs Git and Docker with Compose, but does not need Node.js or npm on the host.
 
-1. The client loads the HTTPS page and accepts the certificate warning.
-2. The client reads the QR token from the fragment.
-3. The client removes the fragment with `history.replaceState`.
-4. The client opens the client WebSocket.
-5. The client sends the QR token or manual PIN in its first message.
-6. The server consumes both pairing credentials after the first valid request.
-7. The server reserves the only client slot for 60 seconds.
-8. The server sends a six-character matching code to both screens.
-9. The host compares the code and selects **Approve** or **Reject**.
-10. The server issues a 32-byte reconnect token after approval.
+## Room state machine
 
-A second request receives a generic busy response while the first request is pending. A rejected, disconnected, or expired pending request returns the session to the unpaired state with new credentials.
-
-The browser summary and network address are display hints. The server does not treat them as identity.
-
-## Session state machine
-
-The session uses these states:
+Each room uses these states:
 
 | State | Meaning | Allowed next states |
 | --- | --- | --- |
-| `STARTING` | The server creates the certificate and listener. | `UNPAIRED`, `ENDING` |
-| `UNPAIRED` | Current QR and PIN credentials can accept one request. | `PAIR_PENDING`, `ENDING` |
-| `PAIR_PENDING` | One client holds the pending slot. | `PAIRED`, `UNPAIRED`, `ENDING` |
-| `PAIRED` | One approved client WebSocket is active. | `CLIENT_GRACE`, `UNPAIRED`, `ENDING` |
-| `CLIENT_GRACE` | The approved client can resume for 60 seconds. | `PAIRED`, `UNPAIRED`, `ENDING` |
-| `ENDING` | The server revokes state and closes connections. | `ENDED` |
-| `ENDED` | The process has released the listener. | None |
+| `WAITING` | The sender is connected and the room can accept one receiver. | `PAIR_PENDING`, `SENDER_GRACE`, `ENDED` |
+| `PAIR_PENDING` | One receiver holds the pending slot. | `PAIRED`, `WAITING`, `SENDER_GRACE`, `ENDED` |
+| `PAIRED` | The sender and approved receiver are connected. | `RECEIVER_GRACE`, `SENDER_GRACE`, `ENDED` |
+| `RECEIVER_GRACE` | The approved receiver can reconnect for 60 seconds. | `PAIRED`, `SENDER_GRACE`, `ENDED` |
+| `SENDER_GRACE` | The sender can reconnect for 60 seconds. | Prior active state, `ENDED` |
+| `ENDED` | The relay has removed the room and ciphertext. | None |
 
-The host connection has a separate 60-second grace timer. An active file source stream counts as host presence. An active file download counts as client presence.
+The sender WebSocket creates the room. The relay returns a random sender reconnect credential. The receiver receives a separate reconnect credential after approval.
 
-The server rejects a concurrent WebSocket that presents the active reconnect token. A page reload can retry after the old socket closes. The server does not let a second tab replace an active connection.
+The relay rejects a concurrent connection that presents an active role credential. A page reload can retry after the old socket closes.
 
-If the client grace period expires, the server performs these actions:
+If the sender grace period expires, the relay ends the room. If the receiver grace period expires, the relay revokes all active items and returns the room to `WAITING` with a new PIN in the sender browser.
 
-1. Revoke all active items.
-2. Invalidate the reconnect token.
-3. Create new pairing credentials.
-4. Return to `UNPAIRED` if the session remains active.
+### Room deadline
 
-If the host grace period expires, the server ends the full session.
+A room starts with a 10-minute inactivity deadline. A successful item send or sender **Extend** action resets the deadline to 10 minutes.
 
-### Session deadline
+Pairing traffic, WebSocket heartbeats, reveal, copy, and ordinary page activity do not reset the deadline.
 
-The session starts with a 10-minute inactivity deadline. A successful text send, file offer, or explicit **Extend** action resets the deadline to 10 minutes.
+The relay ends a room after its deadline, sender action, sender grace expiry, or server shutdown. Room end invalidates all relay credentials and removes all retained ciphertext.
 
-Pairing, approval, reveal, copy, download selection, and WebSocket traffic do not reset this deadline. Byte progress during a file transfer pauses the deadline. The server resumes the saved time after the transfer ends or fails.
+## Secret lifecycle
 
-The process ends after the deadline, an explicit **End**, a termination signal, or an unrecoverable internal error. The server sends a final state event before it closes the sockets and listener.
+### Limits
 
-## Item lifecycle
+Each room has these limits:
 
-### Common item rules
+- 10 active items;
+- 64 KiB maximum plaintext per item in the sender browser;
+- 72 KiB maximum encrypted envelope at the relay;
+- 256 KiB maximum retained ciphertext per room;
+- TTL choices of 30, 60, 120, or 300 seconds.
 
-Each item contains:
+The default TTL is 60 seconds. The sender browser enforces the plaintext limit before encryption. The relay enforces the ciphertext limits.
 
-- a server-generated 128-bit identifier;
-- a host request identifier for idempotency;
-- a label with a fixed length limit;
-- a kind of `text` or `file`;
-- a creation time and server-owned expiration time;
-- an immutable value or immutable file metadata;
-- a state of `ACTIVE`, `TRANSFERRING`, or `REVOKED`.
+### Send
 
-The active list contains at most 10 items. The host can select 30, 60, 120, or 300 seconds. The default is 60 seconds.
+1. The sender enters a label and text value.
+2. The sender selects a TTL or keeps 60 seconds.
+3. The sender browser creates the immutable item plaintext.
+4. The sender browser encrypts the item.
+5. The relay validates the clear envelope and stores the ciphertext.
+6. The relay forwards the envelope to the receiver.
+7. The receiver decrypts and validates the duplicated header fields.
+8. Both browsers show the same authenticated expiration countdown.
+9. The sender clears its input after relay acknowledgement.
 
-The server starts the item TTL after it accepts **Send**. The server does not extend the TTL after reveal, copy, reconnect, or retry.
+The sender cannot send before receiver approval or during receiver grace.
 
-The host or client can revoke an item. Expiry, unpairing, and session shutdown also revoke items.
+### Expiry and revocation
 
-### Text items
+The relay removes ciphertext at expiry. Both browsers also enforce the authenticated expiration time from the encrypted item.
 
-A text item contains at most 64 KiB of UTF-8 data. The label has an 80-character limit.
+The sender or receiver can revoke an item. The relay makes revoke commands idempotent and removes the stored envelope.
 
-The server keeps the value in memory until revocation. The client keeps the value in memory while its card remains active. A reconnect receives each unexpired text value with its original expiration time.
+A malicious relay can retain ciphertext despite the command. It cannot decrypt the ciphertext without the pairing link and PIN under the published client design.
 
-The host clears the text input after the server acknowledges the item. The client card starts hidden. **Reveal** does not affect the TTL.
+### Receiver display and clipboard
 
-The **Copy** action follows this order:
+A receiver card starts hidden. The card shows the label, type, and expiration countdown.
 
-1. Try `navigator.clipboard.writeText()` from the user action.
-2. Select the text if the Clipboard API fails or is unavailable.
-3. Show an instruction for the Android copy action.
+**Reveal** does not change the TTL. **Copy** uses `navigator.clipboard.writeText()` from a user action. The application selects the value and shows a manual-copy instruction if the Clipboard API fails.
 
-KeyBridge does not copy without a user action. KeyBridge does not clear the clipboard because a delayed clear can overwrite newer user content.
+KeyBridge does not clear the clipboard. A delayed clear can overwrite content that the user copied later.
 
-### File offers
+### Reconnect
 
-A file offer contains a sanitized base filename and a declared size. The size limit is 1 GiB. KeyBridge ignores the browser-provided MIME type and serves `application/octet-stream`.
+The relay resends unexpired encrypted item envelopes after the approved receiver reconnects. The original authenticated expiration times remain in effect.
 
-The host page keeps the selected `File` object. The Node process keeps metadata only. The host page removes its `File` reference after revocation or completed transfer.
+The receiver stores the room key, derived session state, and relay reconnect credential in `sessionStorage`. It stores no decrypted item value there.
 
-A host page instance has an in-memory identifier. A WebSocket reconnect from the same page can retain file offers. A browser reload creates another identifier, so the server revokes all file offers from the old page.
+The sender stores equivalent room and reconnect state in `sessionStorage`. A tab reload can restore the room. A closed browser session can lose the room.
 
-The client receives file metadata through the WebSocket. The client receives no file bytes before **Download**.
-
-### File relay
-
-The server permits one file transfer at a time.
-
-1. The client requests an active file through the WebSocket.
-2. The server pauses the item and session deadlines.
-3. The server creates separate one-use upload and download capabilities.
-4. The server sends the upload capability to the host page.
-5. The server sends the download capability to the client page.
-6. The host posts the selected `File` to the upload route.
-7. Chrome opens the download route as a normal browser download.
-8. Node pipes the request stream to the response with backpressure.
-9. The server counts bytes and sends throttled progress events.
-10. The server revokes the item after it sends the declared byte count.
-
-Both HTTP streams must start within 15 seconds. A transfer stops after 30 seconds without byte progress. A transfer also stops 15 minutes after the first attempt starts.
-
-A completed HTTP response means Node sent all bytes. It does not prove that Chrome saved the file.
-
-If a connection fails before completion, the server restores the item's saved TTL. The client can retry from byte zero until the item or transfer deadline expires. The server does not support range requests.
-
-The server aborts both streams on a size mismatch, timeout, revocation, session end, or transport error. A partial Chrome download remains outside KeyBridge control.
+Both browsers clear room key material and relay credentials after room end. JavaScript and browser storage do not provide a secure erasure guarantee.
 
 ## WebSocket protocol
 
-All control messages and text values use bounded JSON text frames. File bytes use HTTPS streams.
+The browser and relay exchange bounded JSON text frames. Binary and file frames are unsupported.
 
-Each message contains a protocol version and a message type. Mutation commands contain a request identifier. The server treats a repeated request identifier as the same command for the session.
+Each frame contains a protocol version and message type. Mutation commands contain a random request identifier for idempotency.
 
 The protocol has these command groups:
 
-- pairing request, pending state, approval, rejection, and expiry;
-- client resume, snapshot, disconnect, and leave;
-- text send and file offer;
-- item creation, expiry, revocation, and removal;
-- file request, stream readiness, progress, failure, and completion;
-- session extension, countdown, end, and error.
+- sender room creation, resume, extend, and end;
+- receiver join, pairing request, approval, rejection, resume, and leave;
+- encrypted item send, snapshot, revoke, and expiry;
+- room state, countdown, and public errors;
+- heartbeat and connection close.
 
-The first client message must be a pairing request or resume request. The server rejects all item commands before approval.
+The first sender message must create or resume a room. The first receiver message must join or resume a room.
 
-The server validates every message at runtime with small direct validators. The implementation does not add a schema framework.
+The relay validates messages with small direct functions. The project does not add a runtime schema framework.
 
-The WebSocket server sets a frame limit above the 64 KiB text limit and below 128 KiB. It closes malformed, oversized, out-of-state, and unsupported-version connections with stable error codes.
+The `ws` server enforces a frame limit below 96 KiB. It closes malformed, oversized, unsupported-version, and out-of-state connections with stable error codes.
 
-A ping and pong heartbeat detects dead sockets. The heartbeat interval must leave enough time for Android background transitions before the 60-second reconnect grace starts.
+The WebSocket heartbeat detects dead sockets. Heartbeat failure starts the applicable reconnect grace period.
 
-## User experience
+## Public abuse controls
 
-### Host dashboard
+A public encrypted relay cannot inspect content. V1 uses resource limits instead of content moderation.
 
-The host dashboard contains these sections:
+Initial limits:
 
-- session status, inactivity countdown, **Extend**, and **End**;
-- LAN address selector and certificate instructions;
-- QR code, manual address, PIN, and credential countdown;
-- pending-client code with **Approve** and **Reject**;
-- text and file send controls with TTL presets;
-- active items with countdown, transfer progress, and **Revoke**.
+- 5 live rooms per IPv4 address or IPv6 `/64` prefix;
+- 20 room creations per address group in 10 minutes;
+- 20 WebSocket connections per address group;
+- 500 live rooms for one relay process;
+- 128 MiB of retained ciphertext for the full process;
+- 256 KiB of retained ciphertext per room;
+- one pending receiver per room;
+- bounded pending attempts and malformed frames;
+- a 10-minute room deadline and short item TTLs.
 
-The dashboard disables **Send** unless the approved client has an active connection. The dashboard clears secret form values after a successful send.
+The relay returns `busy` when a global limit is full. It returns `rate_limited` for an address limit. Public errors do not reveal whether a random room identifier exists.
 
-The dashboard keeps QR and PIN values out of terminal logs. If browser startup fails, the CLI prints the loopback host address only.
+All limit state remains in memory. A process restart resets rate counters and ends rooms.
 
-### Android client
+Caddy is the only network peer that can reach the relay in production. The relay accepts forwarding headers only from that deployment path. It normalizes source addresses before applying limits.
 
-The client page contains these states:
+These controls reduce casual abuse and memory exhaustion. They do not stop a distributed denial-of-service attack. V1 does not add CAPTCHAs, accounts, or an external rate-limit service.
 
-- pairing credential input;
-- pending approval with the matching code;
-- connected item list and session countdown;
-- reconnecting state with the grace countdown;
-- ended or expired state.
+## Privacy and transparency
 
-Text cards start hidden. File cards show the filename, size, TTL, and persistence warning. The page requires a second user action to start a download after it shows the warning.
+### Data handling
 
-The page stores the reconnect token in `sessionStorage`. It stores no text value, file byte, PIN, or QR token there. The page clears the token after unpairing or session end.
+The application uses no database, object storage, queue, analytics service, or telemetry service.
 
-## Memory and persistence
+The relay logs aggregate state changes and errors. Logs exclude these values:
 
-The process does not create a database, temporary secret file, transfer log, or telemetry event.
+- room identifiers;
+- reconnect credentials;
+- ciphertext;
+- pairing links and fragments;
+- PIN values;
+- labels and secret values;
+- full network addresses.
 
-The server removes references to text values after revocation. The server overwrites owned byte buffers when the operation does not create another copy. JavaScript strings and runtime copies cannot receive a reliable zeroization guarantee.
+In-memory address data exists for rate limiting. The relay removes it when its rate window expires.
 
-The file relay uses bounded stream buffers. It does not retain the complete file. The operating system and TLS implementation can retain temporary memory pages outside application control.
+The current Caddy configuration does not enable an access log. The KeyBridge route should not add one. Caddy error logs must not include WebSocket frame content.
 
-Every application response uses cache prevention headers. Input controls disable autocomplete, spellcheck, and automatic capitalization where browsers honor those attributes.
+### Browser storage and caching
 
-The generated certificate key remains in memory. The process drops its reference at shutdown. KeyBridge does not claim secure key erasure from managed runtime memory.
+The HTML response uses revalidation or `no-store`. Content-hashed JavaScript and CSS can use immutable caching because they contain no room data.
+
+KeyBridge uses no cookie, local storage, IndexedDB database, or service worker. Each browser uses `sessionStorage` for temporary room and reconnect state.
+
+The QR fragment can remain in an external scanner or messaging application. Pairing links expire with their room, but retained links still expose the room key.
+
+### Transparent release information
+
+Each production build embeds these public values:
+
+- a semantic version;
+- a source commit identifier;
+- a client asset manifest with SHA-256 hashes;
+- a protocol version.
+
+The interface exposes this information on a security page. The release process publishes the source, package lock, container digest, software bill of materials, and build checksums.
+
+A release must not claim reproducible builds until two clean builds produce matching artifacts. The public site cannot prove that it serves the published image, so the security page must retain the browser bootstrap warning.
+
+KeyBridge includes no third-party browser requests. A user can inspect the network panel and see only the KeyBridge origin.
+
+## HTTP and browser security
+
+Caddy and the relay apply these controls:
+
+- strict Content Security Policy with scripts, styles, images, and connections limited to the KeyBridge origin;
+- `frame-ancestors 'none'` and frame protection;
+- `object-src 'none'` and `base-uri 'none'`;
+- strict transport security;
+- `Referrer-Policy: no-referrer`;
+- MIME-sniffing protection;
+- same-origin opener and resource policies;
+- a Permissions Policy that disables unused sensors and media APIs.
+
+The application does not need camera permission. Android scans the QR code with its system camera application.
+
+The relay checks the exact public `Origin` for WebSocket upgrades. It rejects cross-origin browser connections.
+
+## Docker-first development
+
+### Developer prerequisite
+
+A developer installs Docker with the Compose plugin. The developer does not install Node.js, npm, Svelte, Vite, or Playwright on the host.
+
+### Development containers
+
+Use one development image with Node.js 26 and installed package dependencies. Compose starts two development services from that image:
+
+- `web` runs the Vite development server with Hot Module Replacement;
+- `relay` runs the Node relay in watch mode.
+
+An on-demand `e2e` service uses the browser-test image stage with Chromium installed.
+
+Vite proxies the WebSocket path to `relay:3000`. The host browser connects to Vite on a published loopback development port.
+
+Both services mount the source tree. A named volume holds container `node_modules` so the bind mount does not create host dependencies.
+
+The standard development command is:
+
+```text
+docker compose -f compose.dev.yaml up --build
+```
+
+Run checks through one-off containers:
+
+```text
+docker compose -f compose.dev.yaml run --rm relay npm run check
+docker compose -f compose.dev.yaml run --rm relay npm test
+docker compose -f compose.dev.yaml run --rm e2e npm run test:e2e
+```
+
+The development server can use the secure-context exception for desktop loopback. Test a physical Android phone through a Caddy-backed staging or production origin.
+
+### Docker files
+
+- `Dockerfile` contains dependency, build, development, browser-test, and runtime stages.
+- `compose.dev.yaml` contains bind mounts, Vite, relay watch mode, and test commands.
+- The browser-test stage installs Chromium and its system libraries inside the image.
+- `compose.yaml` provides a production-like local container for smoke tests.
+- `.dockerignore` excludes Git data, local build output, logs, and browser test artifacts.
+
+The dependency stage uses `npm ci` and the committed package lock. The runtime stage copies built assets and production dependencies only.
+
+### Runtime container
+
+The runtime image:
+
+- uses a pinned Node.js 26 base image;
+- runs as a non-root user;
+- uses an exec-form command for signal handling;
+- writes no application data;
+- supports a read-only root filesystem;
+- uses a temporary in-memory directory when Node requires one;
+- listens on `0.0.0.0:3000` inside the Compose network;
+- exposes a minimal health endpoint without room statistics.
+
+The Compose service drops Linux capabilities, enables `no-new-privileges`, uses no persistent volume, and does not publish port 3000 on the homelab host.
+
+## Homelab deployment
+
+The existing Caddy image already includes the Cloudflare DNS module. The global Caddy configuration uses the Cloudflare API token for certificate issuance.
+
+The existing DDNS service includes wildcard records for `tjallo.nl`. Confirm that `keybridge.tjallo.nl` resolves to the public host before deployment.
+
+### Planned application service
+
+Add a `keybridge` service to `../homelab-docker-files/speedmeister/docker-compose.yml` with these properties:
+
+- a versioned and digest-pinned KeyBridge image;
+- `restart: unless-stopped`;
+- the existing default Compose network;
+- no published port;
+- a read-only root filesystem;
+- no persistent volume;
+- dropped capabilities and `no-new-privileges`;
+- a health check against internal port 3000;
+- a memory limit that matches the relay ciphertext cap.
+
+The service needs no application secret. Caddy owns the existing Cloudflare credential.
+
+### Planned Caddy route
+
+Add a dedicated `keybridge.tjallo.nl` site block to `../homelab-docker-files/speedmeister/caddy/conf/Caddyfile`.
+
+The route must:
+
+- reverse proxy to `keybridge:3000`;
+- preserve WebSocket upgrades;
+- apply the KeyBridge security headers;
+- avoid an access-log directive;
+- use the existing automatic certificate setup.
+
+### Required homelab documentation changes
+
+The deployment implementation must also update:
+
+- `../homelab-docker-files/docs/operations.md`;
+- the public Caddy route table;
+- the service inventory and deployment procedure;
+- `../homelab-docker-files/speedmeister/homepage/config/services.yaml`;
+- a KeyBridge service guide under the homelab documentation tree.
+
+Do not add a real Cloudflare token or another secret to the repository.
 
 ## Dependencies
 
-Use Node.js standard modules for HTTPS, cryptographic randomness, streams, timers, network interfaces, argument parsing, and process control.
+Use Node.js standard modules for HTTP, cryptographic randomness, timers, static file serving, network address parsing, and process control.
 
 Add these focused dependencies:
 
 - `ws` for the WebSocket server;
-- `selfsigned` for in-memory X.509 certificate generation;
-- `qrcode-generator` for the QR matrix;
-- Svelte 5 and Vite for the two browser bundles.
+- `qrcode-generator` for the browser QR matrix;
+- Svelte 5 and Vite for the browser build.
 
-Use TypeScript in strict mode. Use the Node.js test runner for server tests. Use Playwright for browser flows and Android viewport emulation.
+Use TypeScript in strict mode. Use `svelte-check` for Svelte and TypeScript diagnostics. Use the Node.js test runner for relay tests and Playwright for browser flows.
 
-Do not add Express, a database client, a state library, a logging framework, a dependency injection container, a runtime schema framework, or a payload cryptography package.
+Do not add SvelteKit, Express, a database client, a state library, a logging framework, a dependency injection container, a runtime schema framework, or a browser cryptography package.
 
-Commit the package lock. Pin major versions and review transitive packages before the first release.
+Commit the package lock. Review and pin dependency major versions before the first release.
 
 ## Repository structure
 
 ```text
 .
+├── .dockerignore
+├── Dockerfile
+├── compose.dev.yaml
+├── compose.yaml
 ├── package.json
 ├── package-lock.json
 ├── tsconfig.json
 ├── vite.config.ts
 ├── src
-│   ├── cli.ts
 │   ├── server
-│   │   ├── app-server.ts
-│   │   ├── certificate.ts
-│   │   ├── file-relay.ts
-│   │   ├── network.ts
+│   │   ├── main.ts
 │   │   ├── protocol.ts
+│   │   ├── rate-limit.ts
+│   │   ├── relay.ts
+│   │   ├── rooms.ts
 │   │   ├── security.ts
-│   │   ├── session.ts
-│   │   └── websockets.ts
+│   │   └── static-files.ts
+│   ├── shared
+│   │   └── envelope.ts
 │   └── ui
-│       ├── client
-│       │   ├── App.svelte
-│       │   ├── ItemCard.svelte
-│       │   └── main.ts
-│       ├── host
-│       │   ├── App.svelte
-│       │   ├── ActiveItems.svelte
-│       │   ├── PairingPanel.svelte
-│       │   ├── SendPanel.svelte
-│       │   └── main.ts
-│       └── shared.css
+│       ├── App.svelte
+│       ├── crypto.ts
+│       ├── main.ts
+│       ├── room-state.ts
+│       ├── styles.css
+│       └── components
+│           ├── ReceiverRoom.svelte
+│           ├── SecretCard.svelte
+│           ├── SenderRoom.svelte
+│           └── StartRoom.svelte
 ├── test
-│   ├── certificate.test.ts
-│   ├── file-relay.test.ts
-│   ├── network.test.ts
 │   ├── protocol.test.ts
-│   ├── session.test.ts
+│   ├── rate-limit.test.ts
+│   ├── rooms.test.ts
 │   └── integration
 ├── e2e
 ├── docs
-│   └── protocol.md
+│   ├── protocol.md
+│   ├── security-model.md
+│   └── self-hosting.md
 └── README.md
 ```
 
-Create a component only when it owns a distinct form or item behavior. Keep state transitions in `session.ts`, not in Svelte components.
+Keep browser cryptography in `src/ui/crypto.ts`. Keep room authorization and expiry in `src/server/rooms.ts`. Do not create generic repositories, services, factories, or transport abstractions.
 
 ## Error handling
 
-The protocol uses stable public error codes such as `busy`, `expired`, `invalid_message`, `not_allowed`, `too_large`, and `transfer_unavailable`.
+The relay uses stable public error codes such as `busy`, `expired`, `invalid_message`, `not_allowed`, `rate_limited`, `room_unavailable`, and `unsupported_version`.
 
-Expected user errors do not include stack traces. Server logs can contain timestamps, state names, item identifiers, and byte counts. Logs must exclude values, filenames when avoidable, credentials, transfer URLs, and reconnect tokens.
+Expected errors do not include stack traces or room existence details. The sender receives useful local messages after its relay role is authenticated.
 
-A transport error revokes the affected transfer. A state invariant failure ends the session instead of continuing with uncertain authorization state.
+A failed decryption remains a browser-local pairing or item error. The browser does not send a plaintext decryption reason to the relay.
 
-The CLI handles interrupt and termination signals. Shutdown revokes state, aborts streams, closes sockets, closes the listener, and exits.
+A room invariant failure ends the affected room. A process invariant failure closes all rooms and exits so the container can restart.
+
+The relay handles interrupt and termination signals. Shutdown closes WebSockets, removes room references, closes the HTTP listener, and exits within the Compose stop grace period.
 
 ## Testing strategy
 
-### Unit tests
+### Cryptography tests
 
-Test the session state machine with explicit timestamps:
+Run browser cryptography tests in Playwright and compatible Web Crypto tests in Node.js.
 
-- first-request slot reservation;
-- approval, rejection, and pending timeout;
-- credential rotation and invalid PIN limits;
-- QR, PIN, reconnect, and request replay;
-- concurrent client rejection;
-- reconnect success and grace expiry;
-- session refresh from **Send** and **Extend** only;
-- item expiry, revoke, and reconnect snapshots;
-- file timer pause, retry, stall, and hard timeout;
-- host page reload revocation for file offers;
-- process shutdown from each session state.
+Cover these cases:
 
-Test protocol and HTTP boundaries:
+- both browsers derive the same key from one link and PIN;
+- another PIN derives a different key;
+- directional keys differ;
+- fixed HKDF and AES-GCM vectors match expected bytes;
+- modified ciphertext fails authentication;
+- modified additional authenticated data fails authentication;
+- a repeated message identifier is rejected;
+- an expired encrypted item does not reappear;
+- the relay frame contains no known plaintext sentinel;
+- the room key and PIN never enter a relay message.
 
-- malformed JSON and unknown fields;
-- oversized frames, labels, text, and files;
-- invalid host names and origins;
-- non-loopback host requests;
-- filename and response-header injection;
-- transfer token reuse and wrong-item access;
-- upload size mismatch and client abort;
-- secret and token redaction from errors.
+Freeze and document the envelope format before implementation proceeds beyond pairing.
 
-### Integration tests
+### Room and relay tests
 
-Start the HTTPS server on port `0` with certificate verification disabled in the test client.
+Test room transitions with explicit timestamps:
 
-Exercise these paths with real HTTPS and WebSocket connections:
+- create, pending, approve, reject, and pending timeout;
+- first-receiver slot reservation;
+- concurrent receiver rejection;
+- sender and receiver reconnect;
+- sender grace room termination;
+- receiver grace cleanup and return to waiting;
+- room extension from **Send** and **Extend** only;
+- item expiry, revoke, and encrypted snapshot;
+- request idempotency and stale replay;
+- process shutdown from each room state.
 
-- QR pairing and manual PIN pairing;
-- two clients that race for the pending slot;
-- page reload and reconnect token recovery;
-- text send, expiry, revoke, and resync;
-- streamed file delivery with a slow reader;
-- interrupted file delivery and full retry;
-- transfer completion and capability invalidation;
-- host disconnect and session shutdown;
-- process restart and stale-token rejection.
+Test public boundaries:
 
-Use generated bytes and a test hash to confirm stream integrity. Do not place fixture secrets in the repository.
+- malformed and oversized frames;
+- unknown room responses that do not reveal existence;
+- per-address and global rate limits;
+- room and process memory caps;
+- untrusted forwarding headers;
+- wrong WebSocket origins;
+- secret redaction from errors and logs;
+- escaped labels and values in Svelte rendering.
 
 ### Browser tests
 
-Use Playwright with the HTTPS warning disabled in the harness. Test the host page and an Android Chromium viewport.
+Use two isolated Playwright browser contexts for the sender and receiver.
 
-Cover these user flows:
+Cover these flows:
 
-- fragment removal after QR startup;
-- matching-code approval;
-- hidden text, reveal, copy failure, and manual selection;
-- client reload during reconnect grace;
-- second-tab rejection;
-- item countdown and removal;
-- file warning, download, progress, and completed revocation;
-- session extension and session end;
-- cache and security response headers.
+- room creation and QR link generation;
+- fragment removal after receiver startup;
+- wrong PIN and correct PIN behavior;
+- manual sender approval;
+- hidden value, reveal, and copy fallback;
+- send, expiry, revoke, and reconnect snapshot;
+- second receiver rejection;
+- sender and receiver page reload within grace;
+- room extension and room end;
+- security and cache response headers;
+- no third-party network request.
 
-### Manual platform tests
+### Docker tests
 
-Test the packaged CLI on Linux, macOS, and Windows. Test a physical Android device with the current Chrome release.
+Verify these container properties:
 
-The manual checklist must include:
+- a clean checkout builds without host Node.js;
+- development watch mode sees source changes;
+- tests run through Compose;
+- the runtime image starts with a read-only root filesystem;
+- the runtime image runs as a non-root user;
+- no persistent volume appears;
+- termination signals close the relay within the grace period;
+- the health endpoint reveals no room data;
+- the production image contains no development dependency tree or test artifacts.
 
-- certificate warning steps on host and Android;
-- offline LAN use without an internet route;
-- host firewall prompts;
-- multiple adapters and a VPN adapter;
-- Wi-Fi client isolation failure text;
-- Android sleep, reload, and reconnect behavior;
-- a 1 GiB transfer, cancellation, retry, and insufficient storage;
-- browser history, clipboard, partial downloads, and completed downloads;
-- process exit with no secret file created.
+### Deployment tests
+
+Test the Caddy route on the public domain:
+
+- a publicly trusted certificate loads without a warning;
+- HTTPS redirects work;
+- WebSocket upgrades remain stable;
+- the public origin passes the browser secure-context check;
+- Android Clipboard API behavior matches the fallback design;
+- room fragments do not appear in Caddy requests or application logs;
+- container restart ends all rooms;
+- the application container has no public host port.
 
 ## Incremental implementation phases
 
-### Phase 1: Build and HTTPS shell
+### Phase 1: Docker and Svelte bootstrap
 
-- Create the Node.js, TypeScript, Svelte, and Vite setup.
-- Generate an in-memory certificate with all required address entries.
-- Start one HTTPS listener on an assigned port.
-- Serve separate host and client bundles.
-- Add route, origin, loopback, header, and request-size checks.
-- Open the host browser and print a fallback host address.
+- Create the Docker stages and development Compose file.
+- Add the manual Svelte 5 and Vite setup.
+- Serve one static application from the Node relay.
+- Add Vite WebSocket proxying and Hot Module Replacement.
+- Add type checking, formatting, and container test commands.
 
-Exit criterion: Both pages load on a LAN, and route-boundary tests pass.
+Exit criterion: A clean checkout starts through Docker and shows the three empty application views.
 
-### Phase 2: Pairing and session state
+### Phase 2: Room relay
 
-- Implement `session.ts` with explicit transitions and timestamps.
-- Add QR and PIN rotation.
-- Add the pending slot, matching code, approval, and rejection.
-- Enforce one client and reconnect grace.
-- Add session inactivity, host grace, and clean process exit.
+- Implement bounded room state and explicit transitions.
+- Add sender creation and reconnect credentials.
+- Add receiver pending and reconnect credentials.
+- Add room timers, heartbeats, origin checks, and shutdown.
+- Add per-address and global resource limits.
 
-Exit criterion: Unit and integration tests cover each session transition and race.
+Exit criterion: Relay tests cover all room transitions and concurrent room limits without encrypted payloads.
 
-### Phase 3: Text transfer
+### Phase 3: Browser encryption
 
-- Add immutable text commands and active-list limits.
-- Add TTL presets, expiry, revoke, and reconnect snapshots.
-- Add hidden client cards and best-effort copy.
-- Clear host inputs and client values at the correct lifecycle points.
+- Freeze the pairing and envelope format in `docs/protocol.md`.
+- Implement HKDF and AES-GCM through Web Crypto.
+- Add room-link and PIN key derivation.
+- Add directional keys, nonces, authenticated headers, and replay checks.
+- Add fixed test vectors and plaintext-sentinel tests.
 
-Exit criterion: Browser tests cover send, reveal, copy fallback, expiry, revoke, and reload.
+Exit criterion: Two browser contexts exchange authenticated ciphertext that the relay cannot decode.
 
-### Phase 4: Live file relay
+### Phase 4: Pairing interface
 
-- Add file offers and host page instance tracking.
-- Add one-use upload and download capabilities.
-- Pipe one file with backpressure and byte validation.
-- Add progress, timer pause, stall handling, full retry, and completion revoke.
-- Add the Android persistence warning and normal browser download.
+- Add QR and copied-link controls.
+- Add the separate PIN input on the receiver.
+- Add encrypted pairing proof and sender approval.
+- Add pending timeout, rejection, and first-receiver enforcement.
+- Remove fragment data from receiver history.
 
-Exit criterion: Integration tests stream 1 GiB without whole-file server buffering and cover abort paths.
+Exit criterion: A physical Android Chrome browser pairs through the public staging origin.
 
-### Phase 5: Hardening and packaging
+### Phase 5: Secret lifecycle
 
-- Add heartbeat handling and bounded public errors.
-- Audit logs and memory references.
-- Add signal handling and fatal-invariant shutdown.
-- Build the npm executable and include the browser assets.
-- Add README operation steps, limitations, and troubleshooting.
-- Add the protocol state table to `docs/protocol.md`.
+- Add labeled text input and TTL presets.
+- Add encrypted immutable items and relay snapshots.
+- Add hidden receiver cards, reveal, copy, expiry, and revoke.
+- Add sender and receiver reload recovery through `sessionStorage`.
+- Clear browser state at room end.
 
-Exit criterion: Type checks, tests, production build, and package inspection pass.
+Exit criterion: Browser tests cover the complete text transfer and reconnect lifecycle.
 
-### Phase 6: Platform verification
+### Phase 6: Public hardening and transparency
 
-- Run the manual checklist on each host operating system.
-- Run the Android Chrome pairing and file tests on a physical device.
-- Record unsupported browser and managed-device behavior.
-- Fix platform failures before the first release.
+- Apply content limits and public abuse controls.
+- Add strict browser security headers.
+- Audit all logs and browser storage.
+- Add the security model and metadata disclosure.
+- Embed release version and asset hashes.
+- Generate container checksums and a software bill of materials.
 
-Exit criterion: The package completes one text transfer and one large-file transfer on each supported host.
+Exit criterion: Security tests and container property tests pass with no known plaintext at the relay boundary.
+
+### Phase 7: Homelab deployment
+
+- Build and publish a versioned container image.
+- Add the KeyBridge service to the Speedmeister Compose project.
+- Add the Caddy route for `keybridge.tjallo.nl`.
+- Add the homepage entry and required homelab documentation.
+- Validate DNS, public TLS, WebSockets, headers, and container isolation.
+
+Exit criterion: The public domain completes one sender-to-phone transfer and survives the deployment checklist.
 
 ## Planned verification commands
 
-The implementation should provide these commands:
+The repository should provide these Docker-first commands:
 
 ```text
-npm run format:check
-npm run check
-npm test
-npm run test:integration
-npm run test:e2e
-npm run build
-npm pack --dry-run
+docker compose -f compose.dev.yaml run --rm relay npm run format:check
+docker compose -f compose.dev.yaml run --rm relay npm run check
+docker compose -f compose.dev.yaml run --rm relay npm test
+docker compose -f compose.dev.yaml run --rm relay npm run test:integration
+docker compose -f compose.dev.yaml run --rm e2e npm run test:e2e
+docker compose -f compose.dev.yaml run --rm relay npm run build
+docker compose build
 ```
 
-The repository is empty, so these commands do not exist yet. Each implementation phase must add and run its applicable checks.
+The application does not exist yet, so these commands are planned interfaces. Each implementation phase must add and run its applicable checks.
+
+The homelab integration must also run its repository validation commands after the configuration changes.
 
 ## Acceptance criteria
 
 V1 is ready when all these statements are true:
 
-- One command starts one temporary session and opens the host dashboard.
-- The host and Android browser can pass their certificate warnings and connect over the LAN.
-- A QR scan or manual PIN creates one pending client.
-- A second client cannot become pending, paired, or reconnected.
-- The host verifies a matching code before any secret reaches the client.
+- A user creates a room without an account.
+- The sender browser generates the room key and PIN.
+- The pairing link keeps its key in the URL fragment.
+- The phone enters the separate PIN before approval.
+- The sender approves one receiver.
+- A second receiver cannot pair with the same room.
+- The sender transfers text to the receiver only.
+- The relay stores ciphertext and public metadata without payload keys.
+- A modified envelope fails browser authentication.
 - Text expires and disappears from both application views.
-- The same client can recover unexpired text during the 60-second grace period.
-- A large file streams without a database, temporary file, or whole-file server buffer.
-- A successful file response revokes the file offer.
-- A failed file transfer permits a byte-zero retry within the remaining deadlines.
-- Session end invalidates all capabilities and exits the process.
-- Logs, caches, and browser storage contain no KeyBridge secret values by design.
-- Documentation states that clipboard and downloaded copies remain outside KeyBridge control.
+- The same receiver recovers unexpired encrypted items during reconnect grace.
+- Room end invalidates relay credentials and removes retained ciphertext.
+- A clean checkout develops, tests, and builds through Docker without host Node.js.
+- Caddy serves the public domain with a trusted certificate and working WebSockets.
+- The production container uses no database, persistent application volume, or public host port.
+- The interface explains server-code trust, metadata exposure, clipboard residue, and the lack of forward secrecy.
