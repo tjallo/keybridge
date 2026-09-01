@@ -51,7 +51,7 @@ docker compose -f compose.dev.yaml run --rm relay npm run build
 Release tags publish the runtime image to GitHub Container Registry (GHCR):
 
 ```sh
-docker pull ghcr.io/tjallo/keybridge:0.1.0
+docker pull ghcr.io/tjallo/keybridge:1.0.0
 docker pull ghcr.io/tjallo/keybridge:latest
 ```
 
