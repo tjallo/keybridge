@@ -20,7 +20,7 @@ COPY --from=build --chown=node:node /app/package.json ./package.json
 USER node
 EXPOSE 3000
 CMD ["node","build/server/main.js"]
-FROM mcr.microsoft.com/playwright:v1.52.0-noble AS browser-test
+FROM mcr.microsoft.com/playwright:v1.62.1-noble AS browser-test
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci

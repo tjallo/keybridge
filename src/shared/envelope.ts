@@ -35,12 +35,17 @@ export function isEnvelope(value: unknown): value is EncryptedEnvelope {
   const e = value as Record<string, unknown>;
   return (
     e.version === PROTOCOL_VERSION &&
-    typeof e.roomId === 'string' && /^[A-Za-z0-9_-]{22}$/.test(e.roomId) &&
-    typeof e.messageId === 'string' && /^[A-Za-z0-9_-]{16,64}$/.test(e.messageId) &&
+    typeof e.roomId === 'string' &&
+    /^[A-Za-z0-9_-]{22}$/.test(e.roomId) &&
+    typeof e.messageId === 'string' &&
+    /^[A-Za-z0-9_-]{16,64}$/.test(e.messageId) &&
     (e.direction === 'sender-to-receiver' || e.direction === 'receiver-to-sender') &&
     ['pair-request', 'pair-response', 'item', 'control'].includes(String(e.kind)) &&
-    (e.expiresAt === null || (typeof e.expiresAt === 'number' && Number.isSafeInteger(e.expiresAt))) &&
-    typeof e.nonce === 'string' && /^[A-Za-z0-9_-]{16}$/.test(e.nonce) &&
-    typeof e.ciphertext === 'string' && e.ciphertext.length <= MAX_ENVELOPE_BYTES
+    (e.expiresAt === null ||
+      (typeof e.expiresAt === 'number' && Number.isSafeInteger(e.expiresAt))) &&
+    typeof e.nonce === 'string' &&
+    /^[A-Za-z0-9_-]{16}$/.test(e.nonce) &&
+    typeof e.ciphertext === 'string' &&
+    e.ciphertext.length <= MAX_ENVELOPE_BYTES
   );
 }

@@ -3,3 +3,4 @@ dist
 build
 package-lock.json
 playwright-report
+PLAN.md
