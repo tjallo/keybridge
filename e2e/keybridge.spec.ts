@@ -144,8 +144,12 @@ test('security headers, transparency, fragment removal, and second Receiver reje
   await expect(sender.getByText('no forward secrecy', { exact: false })).toBeVisible();
   await sender.goto(baseURL!);
   await sender.getByRole('button', { name: 'Create room' }).click();
+  const pairingQr = sender.getByLabel('Pairing QR code');
+  await expect
+    .poll(() => pairingQr.evaluate((element) => (element as HTMLCanvasElement).width))
+    .toBeGreaterThan(116);
   expect(
-    await sender.getByLabel('Pairing QR code').evaluate((element) => {
+    await pairingQr.evaluate((element) => {
       const canvas = element as HTMLCanvasElement;
       const pixels = canvas.getContext('2d')!.getImageData(0, 0, canvas.width, 16).data;
       return Array.from(pixels).every((value, index) => index % 4 === 3 || value === 255);

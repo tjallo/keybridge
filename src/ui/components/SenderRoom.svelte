@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import qrcode from 'qrcode-generator';
   import SecretCard from './SecretCard.svelte';
   export let link: string;
@@ -22,7 +21,7 @@
   let copied = false;
   let copyFailed = false;
   let sending = false;
-  onMount(() => {
+  function drawQrCode(): void {
     const qr = qrcode(0, 'M');
     qr.addData(link);
     qr.make();
@@ -38,7 +37,8 @@
       for (let col = 0; col < qr.getModuleCount(); col++)
         if (qr.isDark(row, col))
           context.fillRect((col + quietZone) * scale, (row + quietZone) * scale, scale, scale);
-  });
+  }
+  $: if (canvas && link) drawQrCode();
   async function copyLink() {
     try {
       await navigator.clipboard.writeText(link);
