@@ -4,9 +4,7 @@ import { createServer, get } from 'node:http';
 import { serveStatic } from '../build/server/static-files.js';
 
 test('malformed percent-encoded paths return 400 without terminating the server', async (context) => {
-  const server = createServer((request, response) =>
-    serveStatic(request, response),
-  );
+  const server = createServer((request, response) => serveStatic(request, response));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => server.close());
   const port = (server.address() as { port: number }).port;

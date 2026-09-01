@@ -12,10 +12,5 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["vite/client"]
   },
-  "include": [
-    "src/ui/**/*.ts",
-    "src/ui/**/*.svelte",
-    "src/shared/**/*.ts",
-    "vite.config.ts"
-  ]
+  "include": ["src/ui/**/*.ts", "src/ui/**/*.svelte", "src/shared/**/*.ts", "vite.config.ts"]
 }

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick } from 'svelte';
+
   export let item: {
     id: string;
     label: string;
@@ -9,19 +10,19 @@
   };
   export let receiver = false;
   export let onRevoke: (id: string) => void;
+
   let revealed = false;
   let copyFailed = false;
   let valueElement: HTMLTextAreaElement;
   let remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000));
+
   const timer = setInterval(
-    () =>
-      (remaining = Math.max(
-        0,
-        Math.ceil((item.expiresAt - Date.now()) / 1000),
-      )),
+    () => (remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000))),
     1000,
   );
+
   onDestroy(() => clearInterval(timer));
+
   async function copy() {
     try {
       await navigator.clipboard.writeText(item.value);
@@ -29,23 +30,24 @@
     } catch {
       revealed = true;
       copyFailed = true;
+
       await tick();
+
       valueElement.focus();
       valueElement.select();
     }
   }
 </script>
 
-<article
-  class="secret-card"
-  aria-label={`Secret ${item.label}`}
->
+<article class="secret-card" aria-label={`Secret ${item.label}`}>
   <header>
     <div>
-      <strong>{item.label}</strong><small>Text · {item.ttl}s expiry</small>
+      <strong>{item.label}</strong>
+      <small>Text · {item.ttl}s expiry</small>
     </div>
     <span class:expiring={remaining <= 10}>{remaining}s</span>
   </header>
+
   {#if receiver}
     <textarea
       class="secret-value"
@@ -55,31 +57,23 @@
       aria-label={`Value for ${item.label}`}
       value={revealed ? item.value : '••••••••••••'}
     ></textarea>
+
     <div class="secret-actions">
-      <button
-        class="button secondary"
-        onclick={() => (revealed = !revealed)}
-        >{revealed ? 'Hide' : 'Reveal'}</button
-      ><button
-        class="button secondary"
-        onclick={copy}>Copy</button
-      ><button
-        class="button danger"
-        onclick={() => onRevoke(item.id)}>Revoke</button
-      >
+      <button class="button secondary" onclick={() => (revealed = !revealed)}>
+        {revealed ? 'Hide' : 'Reveal'}
+      </button>
+      <button class="button secondary" onclick={copy}>Copy</button>
+      <button class="button danger" onclick={() => onRevoke(item.id)}>Revoke</button>
     </div>
-    {#if copyFailed}<p
-        class="error-note"
-        role="alert"
-      >
+
+    {#if copyFailed}
+      <p class="error-note" role="alert">
         Clipboard access failed. Select the revealed value and copy it manually.
-      </p>{/if}
+      </p>
+    {/if}
   {:else}
     <div class="secret-actions">
-      <button
-        class="button danger"
-        onclick={() => onRevoke(item.id)}>Revoke</button
-      >
+      <button class="button danger" onclick={() => onRevoke(item.id)}>Revoke</button>
     </div>
   {/if}
 </article>

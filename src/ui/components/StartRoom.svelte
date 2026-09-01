@@ -6,25 +6,27 @@
 <section class="landing">
   <div class="landing-copy">
     <p class="section-label">Private text transfer</p>
-    <h1>Send a secret.<br /><em>Leave no trail.</em></h1>
+
+    <h1>
+      Send a secret.<br />
+      <em>Leave no trail.</em>
+    </h1>
+
     <p class="landing-summary">
-      Pair a desktop with one phone, transfer encrypted text, and let the room
-      expire.
+      Pair a desktop with one phone, transfer encrypted text, and let the room expire.
     </p>
+
     <div class="landing-actions">
-      <button
-        class="button primary"
-        onclick={onCreate}>Create room <span aria-hidden="true">→</span></button
-      ><button
-        class="button ghost"
-        onclick={onSecurity}>Security &amp; transparency</button
-      >
+      <button class="button primary" onclick={onCreate}>
+        Create room <span aria-hidden="true">→</span>
+      </button>
+      <button class="button ghost" onclick={onSecurity}>
+        Security &amp; transparency
+      </button>
     </div>
   </div>
-  <aside
-    class="flow-card"
-    aria-label="How KeyBridge works"
-  >
+
+  <aside class="flow-card" aria-label="How KeyBridge works">
     <div class="flow-step">
       <span>01</span>
       <div>
@@ -32,6 +34,7 @@
         <p>KeyBridge creates a temporary pairing link and PIN.</p>
       </div>
     </div>
+
     <div class="flow-step">
       <span>02</span>
       <div>
@@ -39,6 +42,7 @@
         <p>Scan the QR code and confirm the separate PIN.</p>
       </div>
     </div>
+
     <div class="flow-step">
       <span>03</span>
       <div>

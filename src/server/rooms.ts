@@ -2,12 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { EncryptedEnvelope } from '../shared/envelope.js';
 
 export type RoomState =
-  | 'WAITING'
-  | 'PAIR_PENDING'
-  | 'PAIRED'
-  | 'RECEIVER_GRACE'
-  | 'SENDER_GRACE'
-  | 'ENDED';
+  'WAITING' | 'PAIR_PENDING' | 'PAIRED' | 'RECEIVER_GRACE' | 'SENDER_GRACE' | 'ENDED';
 export const ROOM_TTL_MS = 600_000,
   GRACE_MS = 60_000,
   PENDING_MS = 60_000;
@@ -15,6 +10,7 @@ const MAX_ITEMS = 10,
   MAX_ROOM_BYTES = 256 * 1024,
   MAX_ROOM_COMMANDS = 4096;
 const token = () => randomBytes(24).toString('base64url');
+
 export interface StoredItem {
   envelope: EncryptedEnvelope;
   bytes: number;
@@ -49,8 +45,7 @@ export class Room {
   get state(): RoomState {
     if (this.ended) return 'ENDED';
     if (!this.senderConnected) return 'SENDER_GRACE';
-    if (this.activeState === 'PAIRED' && !this.receiverConnected)
-      return 'RECEIVER_GRACE';
+    if (this.activeState === 'PAIRED' && !this.receiverConnected) return 'RECEIVER_GRACE';
     return this.activeState;
   }
 
@@ -101,18 +96,13 @@ export class Room {
     if (!this.receiverConnected) return;
     this.receiverConnected = false;
     if (this.activeState === 'PAIR_PENDING') this.reject(now);
-    else if (this.activeState === 'PAIRED')
-      this.receiverGraceUntil = now + GRACE_MS;
+    else if (this.activeState === 'PAIRED') this.receiverGraceUntil = now + GRACE_MS;
   }
 
   resume(role: 'sender' | 'receiver', credential: string, now: number): void {
     this.tick(now);
     if (role === 'sender') {
-      if (
-        credential !== this.senderCredential ||
-        this.senderConnected ||
-        this.ended
-      )
+      if (credential !== this.senderCredential || this.senderConnected || this.ended)
         throw new Error('room_unavailable');
       this.senderConnected = true;
       this.senderGraceUntil = null;
@@ -139,10 +129,7 @@ export class Room {
     this.tick(now);
     if (this.state !== 'PAIRED') throw new Error('not_allowed');
     if (this.items.has(envelope.messageId)) return;
-    if (
-      this.items.size >= MAX_ITEMS ||
-      this.retainedBytes + bytes > MAX_ROOM_BYTES
-    )
+    if (this.items.size >= MAX_ITEMS || this.retainedBytes + bytes > MAX_ROOM_BYTES)
       throw new Error('busy');
     this.items.set(envelope.messageId, { envelope, bytes });
     this.retainedBytes += bytes;
@@ -179,19 +166,14 @@ export class Room {
   tick(now: number): void {
     if (this.ended) return;
     for (const [id, item] of this.items)
-      if (item.envelope.expiresAt !== null && item.envelope.expiresAt <= now)
-        this.revoke(id);
+      if (item.envelope.expiresAt !== null && item.envelope.expiresAt <= now) this.revoke(id);
     if (
       this.activeState === 'PAIR_PENDING' &&
       this.pendingSince !== null &&
       now - this.pendingSince >= PENDING_MS
     )
       this.reject(now);
-    if (
-      !this.senderConnected &&
-      this.senderGraceUntil !== null &&
-      now >= this.senderGraceUntil
-    ) {
+    if (!this.senderConnected && this.senderGraceUntil !== null && now >= this.senderGraceUntil) {
       this.end();
       return;
     }

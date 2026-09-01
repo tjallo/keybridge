@@ -8,9 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
-const checksumScript = fileURLToPath(
-  new URL('../scripts/checksums.mjs', import.meta.url),
-);
+const checksumScript = fileURLToPath(new URL('../scripts/checksums.mjs', import.meta.url));
 
 test('release checksums include nested assets and are repeatable', async (context) => {
   const directory = await mkdtemp(join(tmpdir(), 'keybridge-release-'));

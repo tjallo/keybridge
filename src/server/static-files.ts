@@ -9,6 +9,7 @@ const types: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.json': 'application/json',
 };
+
 export function serveStatic(
   request: IncomingMessage,
   response: ServerResponse,
@@ -16,21 +17,15 @@ export function serveStatic(
 ): void {
   let path: string;
   try {
-    path = decodeURIComponent(
-      new URL(request.url ?? '/', 'http://internal').pathname,
-    );
+    path = decodeURIComponent(new URL(request.url ?? '/', 'http://internal').pathname);
   } catch {
     securityHeaders(response, '/');
-    response
-      .writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' })
-      .end('Bad request');
+    response.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Bad request');
     return;
   }
   securityHeaders(response, path);
   if (path === '/health') {
-    response
-      .writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
-      .end('ok');
+    response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' }).end('ok');
     return;
   }
   const requested = normalize(path).replace(/^(\.\.(\/|\\|$))+/, '');

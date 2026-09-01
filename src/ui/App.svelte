@@ -19,11 +19,7 @@
     type SessionKeys,
   } from './crypto';
   import type { EncryptedEnvelope } from '../shared/envelope';
-  import {
-    isEnvelope,
-    matchesEnvelope,
-    MAX_PLAINTEXT_BYTES,
-  } from '../shared/envelope';
+  import { isEnvelope, matchesEnvelope, MAX_PLAINTEXT_BYTES } from '../shared/envelope';
   type Item = {
     id: string;
     label: string;
@@ -64,20 +60,15 @@
   const controlReplay = new ReplayGuard();
   const pendingMutations = new Map<
     string,
-    {
-      resolve: (accepted: boolean) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
+    { resolve: (accepted: boolean) => void; timer: ReturnType<typeof setTimeout> }
   >();
   let restoring = false,
     resumeRetries = 0,
     rejectedClose = false;
   let restoreCommand: object | null = null;
   const request = () => randomId();
-  const wsUrl = () =>
-    `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
-  const send = (value: object) =>
-    socket?.send(JSON.stringify({ version: 1, ...value }));
+  const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  const send = (value: object) => socket?.send(JSON.stringify({ version: 1, ...value }));
   function save() {
     if (view !== 'sender' && view !== 'receiver') return;
     const data: Stored = { role: view, roomId, roomKey, pin, credential };
@@ -107,10 +98,7 @@
     socket.onclose = (event) => {
       if (event.code === 4000 && rejectedClose) {
         rejectedClose = false;
-        setTimeout(
-          () => connect({ type: 'join', roomId, requestId: request() }),
-          200,
-        );
+        setTimeout(() => connect({ type: 'join', roomId, requestId: request() }), 200);
       } else if (event.code !== 1000 && event.code !== 4001 && !restoring)
         error = 'Connection lost. Reload within 60 seconds to reconnect.';
     };
@@ -189,12 +177,7 @@
     senderNonce = stored.senderNonce ?? '';
     pairingKey = await derivePairingKey(fromBase64url(roomKey), roomId, pin);
     if (pendingReceiverNonce && senderNonce)
-      keys = await deriveSessionKeys(
-        pairingKey,
-        roomId,
-        pendingReceiverNonce,
-        senderNonce,
-      );
+      keys = await deriveSessionKeys(pairingKey, roomId, pendingReceiverNonce, senderNonce);
     if (view === 'sender') {
       link = `${location.origin}/#room=${roomId}&key=${roomKey}`;
       canApprove = Boolean(pendingReceiverNonce && !senderNonce);
@@ -203,13 +186,7 @@
     restoreCommand =
       view === 'receiver' && !credential
         ? { type: 'join', roomId, requestId: request() }
-        : {
-            type: 'resume',
-            roomId,
-            role: view,
-            credential,
-            requestId: request(),
-          };
+        : { type: 'resume', roomId, role: view, credential, requestId: request() };
     connect(restoreCommand);
   }
   async function submitPin(value: string) {
@@ -219,12 +196,7 @@
       pendingReceiverNonce = randomId();
       const envelope = await encryptJson(
         pairingKey,
-        {
-          roomId,
-          direction: 'receiver-to-sender',
-          kind: 'pair-request',
-          expiresAt: null,
-        },
+        { roomId, direction: 'receiver-to-sender', kind: 'pair-request', expiresAt: null },
         { receiverNonce: pendingReceiverNonce },
       );
       send({ type: 'pair', envelope, requestId: request() });
@@ -237,20 +209,10 @@
   async function approve() {
     if (!pairingKey) return;
     senderNonce = randomId();
-    keys = await deriveSessionKeys(
-      pairingKey,
-      roomId,
-      pendingReceiverNonce,
-      senderNonce,
-    );
+    keys = await deriveSessionKeys(pairingKey, roomId, pendingReceiverNonce, senderNonce);
     const envelope = await encryptJson(
       pairingKey,
-      {
-        roomId,
-        direction: 'sender-to-receiver',
-        kind: 'pair-response',
-        expiresAt: null,
-      },
+      { roomId, direction: 'sender-to-receiver', kind: 'pair-response', expiresAt: null },
       { approved: true, receiverNonce: pendingReceiverNonce, senderNonce },
     );
     send({ type: 'approve', envelope, requestId: request() });
@@ -282,11 +244,7 @@
     }
     if (message.type === 'room_state') {
       const nextState = String(message.state);
-      if (
-        view === 'sender' &&
-        roomState === 'RECEIVER_GRACE' &&
-        nextState === 'WAITING'
-      ) {
+      if (view === 'sender' && roomState === 'RECEIVER_GRACE' && nextState === 'WAITING') {
         await rotatePin();
       }
       roomState = nextState;
@@ -307,10 +265,7 @@
           })
         )
           throw new Error('invalid pairing envelope');
-        const body = await decryptJson<{ receiverNonce: string }>(
-          pairingKey,
-          envelope,
-        );
+        const body = await decryptJson<{ receiverNonce: string }>(pairingKey, envelope);
         if (!/^[A-Za-z0-9_-]{16,64}$/.test(body.receiverNonce))
           throw new Error('invalid receiver nonce');
         pairingReplay.commit(envelope.messageId);
@@ -319,8 +274,7 @@
         roomState = 'PAIR_PENDING';
         save();
       } catch {
-        error =
-          'Pairing authentication failed. Ask the Receiver to check the PIN.';
+        error = 'Pairing authentication failed. Ask the Receiver to check the PIN.';
       }
       return;
     }
@@ -351,12 +305,7 @@
           throw new Error();
         pairingReplay.commit(envelope.messageId);
         senderNonce = body.senderNonce;
-        keys = await deriveSessionKeys(
-          pairingKey,
-          roomId,
-          pendingReceiverNonce,
-          senderNonce,
-        );
+        keys = await deriveSessionKeys(pairingKey, roomId, pendingReceiverNonce, senderNonce);
         credential = String(message.credential);
         receiverView = 'PAIRED';
         roomState = 'PAIRED';
@@ -367,8 +316,7 @@
       return;
     }
     if (message.type === 'rejected') {
-      error =
-        'The Sender rejected this pairing request. Enter the new PIN to try again.';
+      error = 'The Sender rejected this pairing request. Enter the new PIN to try again.';
       receiverView = 'REJOINING';
       pin = '';
       pendingReceiverNonce = '';
@@ -378,24 +326,19 @@
       return;
     }
     if (message.type === 'ack') finishMutation(message.requestId, true);
-    if (message.type === 'ack' && message.state)
-      roomState = String(message.state);
-    if (message.type === 'ack' && message.deadline)
-      deadline = Number(message.deadline);
+    if (message.type === 'ack' && message.state) roomState = String(message.state);
+    if (message.type === 'ack' && message.deadline) deadline = Number(message.deadline);
     if (message.type === 'resumed') {
       restoring = false;
       restoreCommand = null;
       roomState = String(message.state);
       deadline = Number(message.deadline);
       if (view === 'receiver') receiverView = 'PAIRED';
-      if (view === 'sender' && roomState === 'WAITING' && keys)
-        await rotatePin();
-      for (const envelope of message.items as EncryptedEnvelope[])
-        await receiveItem(envelope);
+      if (view === 'sender' && roomState === 'WAITING' && keys) await rotatePin();
+      for (const envelope of message.items as EncryptedEnvelope[]) await receiveItem(envelope);
       return;
     }
-    if (message.type === 'item')
-      await receiveItem(message.envelope as EncryptedEnvelope);
+    if (message.type === 'item') await receiveItem(message.envelope as EncryptedEnvelope);
     if (message.type === 'revoked') await receiveRevocation(message);
     if (message.type === 'room_ended') {
       clear();
@@ -419,10 +362,7 @@
     )
       return;
     try {
-      const item = await decryptJson<Item & Record<string, unknown>>(
-        keys.item,
-        envelope,
-      );
+      const item = await decryptJson<Item & Record<string, unknown>>(keys.item, envelope);
       if (
         item.expiresAt !== envelope.expiresAt ||
         item.id !== envelope.messageId ||
@@ -432,8 +372,7 @@
         typeof item.createdAt !== 'number' ||
         ![30, 60, 120, 300].includes(item.ttl) ||
         item.expiresAt !== item.createdAt + item.ttl * 1000 ||
-        new TextEncoder().encode(JSON.stringify(item)).length >
-          MAX_PLAINTEXT_BYTES
+        new TextEncoder().encode(JSON.stringify(item)).length > MAX_PLAINTEXT_BYTES
       )
         return;
       itemReplay.commit(envelope.messageId);
@@ -442,11 +381,7 @@
       error = 'An encrypted item failed authentication.';
     }
   }
-  async function sendItem(
-    label: string,
-    value: string,
-    ttl: number,
-  ): Promise<boolean> {
+  async function sendItem(label: string, value: string, ttl: number): Promise<boolean> {
     if (!keys || ![30, 60, 120, 300].includes(ttl)) return false;
     const createdAt = Date.now(),
       expiresAt = createdAt + ttl * 1000,
@@ -465,37 +400,27 @@
     }
     const envelope = await encryptJson(keys.item, fields, item);
     if (!(await sendMutation({ type: 'item', envelope }))) {
-      error =
-        'The Relay did not accept this item. Your input has been preserved.';
+      error = 'The Relay did not accept this item. Your input has been preserved.';
       return false;
     }
     itemReplay.commit(id);
     items = [...items, item];
     return true;
   }
-  async function receiveRevocation(
-    message: Record<string, unknown>,
-  ): Promise<void> {
+  async function receiveRevocation(message: Record<string, unknown>): Promise<void> {
     if (!keys || typeof message.itemId !== 'string') return;
     const envelope = message.envelope as EncryptedEnvelope;
-    const direction =
-      view === 'sender' ? 'receiver-to-sender' : 'sender-to-receiver';
+    const direction = view === 'sender' ? 'receiver-to-sender' : 'sender-to-receiver';
     const key = view === 'sender' ? keys.receiverControl : keys.senderControl;
     if (
       !isEnvelope(envelope) ||
       controlReplay.has(envelope.messageId) ||
-      !matchesEnvelope(envelope, {
-        roomId,
-        direction,
-        kind: 'control',
-        expiresAt: 'null',
-      })
+      !matchesEnvelope(envelope, { roomId, direction, kind: 'control', expiresAt: 'null' })
     )
       return;
     try {
       const body = await decryptJson<{ itemId: string }>(key, envelope);
-      if (body.itemId !== message.itemId)
-        throw new Error('control item mismatch');
+      if (body.itemId !== message.itemId) throw new Error('control item mismatch');
       controlReplay.commit(envelope.messageId);
       items = items.filter((item) => item.id !== body.itemId);
     } catch {
@@ -577,10 +502,7 @@
         if (view === 'start' || view === 'security') view = 'start';
       }}
     >
-      <span
-        class="brand-mark"
-        aria-hidden="true">K</span
-      ><span>KeyBridge</span>
+      <span class="brand-mark" aria-hidden="true">K</span><span>KeyBridge</span>
     </button>
     <nav aria-label="Project links">
       <a
@@ -588,9 +510,7 @@
         href="https://github.com/tjallo/keybridge"
         rel="noreferrer"
         target="_blank"
-        ><svg
-          viewBox="0 0 16 16"
-          aria-hidden="true"
+        ><svg viewBox="0 0 16 16" aria-hidden="true"
           ><path
             d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.14.46-.33v-1.2c-1.88.4-2.28-.8-2.28-.8-.3-.78-.76-.99-.76-.99-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.62 1.03 1.6.73 2 .56.06-.43.24-.73.44-.9-1.5-.16-3.08-.73-3.08-3.3 0-.73.27-1.33.7-1.8-.07-.17-.3-.86.07-1.78 0 0 .57-.18 1.86.69A6.5 6.5 0 0 1 8 4.9a6.5 6.5 0 0 1 1.7.23c1.3-.87 1.86-.69 1.86-.69.38.92.15 1.61.08 1.78.43.47.7 1.07.7 1.8 0 2.58-1.58 3.14-3.09 3.3.25.2.46.56.46 1.14v1.68c0 .19.12.4.47.33A6.8 6.8 0 0 0 8 1.2Z"
           /></svg
@@ -600,14 +520,8 @@
   </div>
 </header>
 <main class="page-shell">
-  {#if error}<div
-      class="alert"
-      role="alert"
-    >
-      <span>{error}</span><button
-        aria-label="Dismiss error"
-        onclick={() => (error = '')}>×</button
-      >
+  {#if error}<div class="alert" role="alert">
+      <span>{error}</span><button aria-label="Dismiss error" onclick={() => (error = '')}>×</button>
     </div>{/if}{#if view === 'start'}<StartRoom
       onCreate={createRoom}
       onSecurity={() => (view = 'security')}
@@ -634,40 +548,32 @@
       <div class="section-label">Security</div>
       <h1>Security &amp; transparency</h1>
       <p>
-        The published browser client encrypts secret payloads before
-        transmission. The Relay does not receive the room key, PIN, or
-        plaintext.
+        The published browser client encrypts secret payloads before transmission. The Relay does
+        not receive the room key, PIN, or plaintext.
       </p>
       <p>
-        The Relay sees network addresses, times, room associations, ciphertext
-        sizes, expiry times, and protocol events. The server supplying this page
-        could serve modified JavaScript, so this browser app cannot protect
-        against a malicious code-serving server.
+        The Relay sees network addresses, times, room associations, ciphertext sizes, expiry times,
+        and protocol events. The server supplying this page could serve modified JavaScript, so this
+        browser app cannot protect against a malicious code-serving server.
       </p>
       <p>
-        V1 has no forward secrecy. Clipboard content is not cleared. Browser
-        memory and storage cannot guarantee secure erasure.
+        V1 has no forward secrecy. Clipboard content is not cleared. Browser memory and storage
+        cannot guarantee secure erasure.
       </p>
       <div class="build-details">
         Protocol 1 · Version {__APP_VERSION__} · Source {__SOURCE_COMMIT__}
       </div>
       <details>
         <summary>Client asset SHA-256 hashes</summary
-        >{#each Object.entries(releaseAssets) as [asset, hash]}<code
-            >{asset}: {hash}</code
-          ><br />{/each}
+        >{#each Object.entries(releaseAssets) as [asset, hash]}<code>{asset}: {hash}</code><br
+          />{/each}
       </details>
-      <button
-        class="button secondary"
-        onclick={() => (view = 'start')}>Back</button
-      >
+      <button class="button secondary" onclick={() => (view = 'start')}>Back</button>
     </section>{/if}
 </main>
 <footer class="site-footer">
   <span>No accounts · No analytics · Session storage only</span>
-  <a
-    href="https://github.com/tjallo/keybridge"
-    rel="noreferrer"
-    target="_blank">View source on GitHub</a
+  <a href="https://github.com/tjallo/keybridge" rel="noreferrer" target="_blank"
+    >View source on GitHub</a
   >
 </footer>
