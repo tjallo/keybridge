@@ -3,7 +3,7 @@ import { Relay } from './relay.js';
 import { serveStatic } from './static-files.js';
 const port = Number(process.env.PORT ?? 3000);
 const host = process.env.HOST ?? '0.0.0.0';
-const origin = process.env.PUBLIC_ORIGIN ?? 'https://keybridge.tjallo.nl';
+const origin = process.env.PUBLIC_ORIGIN ?? 'http://localhost:3000';
 const server = createServer((request, response) => serveStatic(request, response));
 const relay = new Relay(server, origin);
 server.listen(port, host, () => console.info(JSON.stringify({ event: 'relay_started', port })));

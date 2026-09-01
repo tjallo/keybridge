@@ -4,7 +4,7 @@ Protocol version **1 is frozen**. Browser and Relay frames are bounded JSON text
 
 ## Pairing capability
 
-A pairing link is `https://keybridge.tjallo.nl/#room=<22-character base64url room identifier>&key=<43-character base64url room key>`. The fragment is removed immediately after import. The PIN is eight characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`; presentation may insert one hyphen. HKDF-SHA-256 derives the AES-256-GCM pairing key with:
+A pairing link is `https://keybridge.example/#room=<22-character base64url room identifier>&key=<43-character base64url room key>`. The host is the configured public origin. The fragment is removed immediately after import. The PIN is eight characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`; presentation may insert one hyphen. HKDF-SHA-256 derives the AES-256-GCM pairing key with:
 
 - input key material: the 32-byte room key;
 - salt UTF-8: `<roomId>:<normalizedPIN>`;

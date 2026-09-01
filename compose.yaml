@@ -5,6 +5,10 @@ services:
       target: runtime
       args:
         SOURCE_COMMIT: '${SOURCE_COMMIT:?Set SOURCE_COMMIT to the source commit}'
+    environment:
+      PUBLIC_ORIGIN: '${PUBLIC_ORIGIN:-http://localhost:3000}'
+      TRUST_PROXY: '${TRUST_PROXY:-0}'
+      TRUSTED_PROXY_ADDRESSES: '${TRUSTED_PROXY_ADDRESSES:-}'
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

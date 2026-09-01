@@ -215,7 +215,7 @@ test('malformed upgrade targets return 400 without stopping the relay', async (t
 
 test('wrong Origin is rejected before upgrade', async (t) => {
   const server = createServer();
-  const relay = new Relay(server, 'https://keybridge.tjallo.nl');
+  const relay = new Relay(server, 'https://keybridge.example');
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => {
     relay.shutdown();
