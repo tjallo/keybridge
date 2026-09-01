@@ -19,7 +19,7 @@ Open <http://localhost:5173>. A physical phone requires a Caddy-backed trusted H
 
 ## Container image publishing
 
-Enable Actions and Packages for the Gitea repository. Create a personal access token with package read and write permission. Add the token as the repository Actions secret `REGISTRY_TOKEN`.
+Enable Actions and Packages for the Gitea repository. Permit the built-in Actions token to read repository contents and write packages. The workflows request these permissions for each image build.
 
 A pushed `x.x.x` tag publishes the matching version and `latest` images. The tag must match the `package.json` version.
 
