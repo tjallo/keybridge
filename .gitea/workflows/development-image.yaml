@@ -34,16 +34,17 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE }}
+          flavor: latest=false
           tags: type=raw,value=development
-
-      - name: Configure Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Build and publish image
         uses: docker/build-push-action@v6
         with:
+          builder: default
           context: .
+          target: runtime
           push: true
+          provenance: false
           build-args: |
             SOURCE_COMMIT=${{ steps.source.outputs.commit }}
           tags: ${{ steps.metadata.outputs.tags }}
