@@ -17,4 +17,22 @@ SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build
 
 Open <http://localhost:5173>. A physical phone requires a Caddy-backed trusted HTTPS origin; the loopback secure-context exception applies only to the desktop.
 
+## Container image publishing
+
+Enable Actions and Packages for the Gitea repository. Create a personal access token with package read and write permission. Add the token as the repository Actions secret `REGISTRY_TOKEN`.
+
+A pushed `x.x.x` tag publishes the matching version and `latest` images. The tag must match the `package.json` version.
+
+```sh
+git tag -a 1.0.1 -m "Release 1.0.1"
+git push origin 1.0.1
+```
+
+Run **Publish development image** from the Gitea Actions page to replace the `development` image. Tailnet clients can pull published images after Gitea authentication:
+
+```sh
+docker pull gitea.tailebf42a.ts.net/tjallo/keybridge:1.0.1
+docker pull gitea.tailebf42a.ts.net/tjallo/keybridge:development
+```
+
 Read [the frozen protocol](docs/protocol.md), [security model](docs/security-model.md), and [self-hosting guide](docs/self-hosting.md). The bounded security claim and browser bootstrap limitation are part of the product, not optional deployment notes.
