@@ -527,7 +527,7 @@
       onSubmitPin={submitPin}
       onRevoke={revoke}
       onLeave={leave}
-    />{:else}<section class="panel">
+    />{:else}<section class="panel document-panel">
       <h1>Security &amp; transparency</h1>
       <p>
         The published browser client encrypts secret payloads before transmission. The Relay does
