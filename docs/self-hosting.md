@@ -3,6 +3,7 @@
 KeyBridge v1 is a single-process, in-memory service designed for one container behind a TLS reverse proxy. It does not support multiple replicas or shared room storage.
 
 ```sh
+export SOURCE_COMMIT="$(git rev-parse HEAD)"
 docker compose build
 docker compose up
 ```

@@ -27,8 +27,15 @@ export function randomId(bytes = 16): string {
   return base64url(randomBytes(bytes));
 }
 export function generatePin(): string {
-  const source = randomBytes(8);
-  return Array.from(source, (byte) => PIN_ALPHABET[byte % PIN_ALPHABET.length]).join('');
+  const limit = 256 - (256 % PIN_ALPHABET.length);
+  let pin = '';
+  while (pin.length < 8) {
+    for (const byte of randomBytes(8 - pin.length)) {
+      if (byte >= limit) continue;
+      pin += PIN_ALPHABET[byte % PIN_ALPHABET.length];
+    }
+  }
+  return pin;
 }
 export function normalizePin(pin: string): string {
   const value = pin.toUpperCase().replace('-', '');

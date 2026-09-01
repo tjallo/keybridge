@@ -6,10 +6,10 @@ FROM dependencies AS development
 COPY . .
 CMD ["npm","run","dev:relay"]
 FROM dependencies AS build
-ARG SOURCE_COMMIT=unknown
+ARG SOURCE_COMMIT
 ENV SOURCE_COMMIT=$SOURCE_COMMIT
 COPY . .
-RUN npm run build && npm prune --omit=dev
+RUN test -n "$SOURCE_COMMIT" && npm run build && npm prune --omit=dev
 FROM node:26.0.0-alpine AS runtime
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=3000
 WORKDIR /app

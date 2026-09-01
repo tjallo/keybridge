@@ -5,11 +5,29 @@ import {
   deriveSessionKeys,
   encryptJson,
   decryptJson,
+  generatePin,
   ReplayGuard,
 } from '../src/ui/crypto.ts';
 const hex = (value: string) =>
   Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16));
 const toHex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+test('PIN generation rejects bytes outside the unbiased range', () => {
+  const original = crypto.getRandomValues;
+  let calls = 0;
+  crypto.getRandomValues = (<T extends ArrayBufferView | null>(array: T): T => {
+    const bytes = array as Uint8Array;
+    if (calls++ === 0) bytes.set([248, 249, 250, 251, 252, 253, 254, 255]);
+    else bytes.set([0, 1, 2, 3, 4, 5, 6, 7]);
+    return array;
+  }) as typeof crypto.getRandomValues;
+  try {
+    assert.equal(generatePin(), '23456789');
+    assert.equal(calls, 2);
+  } finally {
+    crypto.getRandomValues = original;
+  }
+});
+
 test('fixed RFC 5869 HKDF-SHA256 vector', async () => {
   const material = await crypto.subtle.importKey('raw', hex('0b'.repeat(22)), 'HKDF', false, [
     'deriveBits',

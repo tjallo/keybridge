@@ -12,7 +12,7 @@ docker compose -f compose.dev.yaml run --rm relay npm test
 docker compose -f compose.dev.yaml run --rm relay npm run test:integration
 docker compose -f compose.dev.yaml run --rm e2e npm run test:e2e
 docker compose -f compose.dev.yaml run --rm relay npm run build
-docker compose build
+SOURCE_COMMIT=$(git rev-parse HEAD) docker compose build
 ```
 
 Open <http://localhost:5173>. A physical phone requires a Caddy-backed trusted HTTPS origin; the loopback secure-context exception applies only to the desktop.

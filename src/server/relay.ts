@@ -45,7 +45,13 @@ export class Relay {
     this.#timer.unref();
   }
   #upgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void {
-    const url = new URL(request.url ?? '/', 'http://internal');
+    let url: URL;
+    try {
+      url = new URL(request.url ?? '/', 'http://internal');
+    } catch {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+      return;
+    }
     if (url.pathname !== '/ws' || request.headers.origin !== this.origin) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();

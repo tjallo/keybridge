@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { connect as connectTcp } from 'node:net';
 import WebSocket from 'ws';
 import { Relay } from '../../build/server/relay.js';
 const id = (character: string) => character.repeat(22);
@@ -177,6 +178,39 @@ test('shutdown closes an upgraded socket that has not selected a role', async ()
   relay.shutdown();
   assert.equal(await closed, 1001);
   await new Promise<void>((resolve) => server.close(() => resolve()));
+});
+
+test('malformed upgrade targets return 400 without stopping the relay', async (t) => {
+  const server = createServer();
+  const relay = new Relay(server, 'http://localhost:3000');
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    relay.shutdown();
+    server.close();
+  });
+  const port = (server.address() as { port: number }).port;
+  const response = await new Promise<string>((resolve, reject) => {
+    const socket = connectTcp(port, '127.0.0.1');
+    let data = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => (data += chunk));
+    socket.on('error', reject);
+    socket.on('close', () => resolve(data));
+    socket.on('connect', () =>
+      socket.write(
+        'GET //[ HTTP/1.1\r\n' +
+          'Host: localhost\r\n' +
+          'Origin: http://localhost:3000\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Sec-WebSocket-Version: 13\r\n' +
+          'Sec-WebSocket-Key: MDEyMzQ1Njc4OWFiY2RlZg==\r\n\r\n',
+      ),
+    );
+  });
+  assert.match(response, /^HTTP\/1\.1 400 Bad Request/);
+  const socket = await connect(port);
+  socket.terminate();
 });
 
 test('wrong Origin is rejected before upgrade', async (t) => {
