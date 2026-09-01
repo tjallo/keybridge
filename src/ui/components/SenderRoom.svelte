@@ -64,55 +64,117 @@
   }
 </script>
 
-<section>
-  <div class="status">
-    <span class:online={state === 'PAIRED'}>{state.replaceAll('_', ' ')}</span><span
-      >Room ends {new Date(deadline).toLocaleTimeString()}</span
-    >
-  </div>
-  {#if state === 'WAITING' || state === 'PAIR_PENDING'}<div class="grid">
-      <div class="panel">
-        <h1>Pair a Receiver</h1>
+<section class="room-page">
+  <header class="room-header">
+    <div>
+      <p class="section-label">Sender room</p>
+      <h1>{state === 'PAIRED' ? 'Send encrypted text' : 'Pair a receiver'}</h1>
+    </div>
+    <div class="room-meta status">
+      <span class:connected={state === 'PAIRED'}>{state.replaceAll('_', ' ')}</span>
+      <time>Ends {new Date(deadline).toLocaleTimeString()}</time>
+    </div>
+  </header>
+
+  {#if state === 'WAITING' || state === 'PAIR_PENDING'}
+    <div class="pairing-layout">
+      <section class="qr-panel">
+        <div class="panel-heading">
+          <h2>Scan to pair</h2>
+          <p>Open the camera on the Receiver device.</p>
+        </div>
         <canvas bind:this={canvas} aria-label="Pairing QR code"></canvas>
-        <p>Pairing link (contains the room key)</p>
-        <input bind:this={linkInput} readonly value={link} aria-label="Pairing link" /><button
-          onclick={copyLink}>Copy full link</button
-        >{#if copied}<small>Copied. Share the PIN separately when practical.</small>{/if}
-        {#if copyFailed}<small role="alert"
-            >Copy failed. The pairing link is selected for manual copy.</small
-          >{/if}
+        <div class="link-field">
+          <label for="pairing-link">Pairing link</label>
+          <div>
+            <input
+              bind:this={linkInput}
+              id="pairing-link"
+              readonly
+              value={link}
+              aria-label="Pairing link"
+            />
+            <button class="button secondary" onclick={copyLink}>Copy</button>
+          </div>
+          <small>The link contains the room key. Share the PIN separately.</small>
+          {#if copied}<small class="success-note">Link copied.</small>{/if}
+          {#if copyFailed}<small class="error-note" role="alert"
+              >Copy failed. The pairing link is selected for manual copy.</small
+            >{/if}
+        </div>
+      </section>
+      <aside class="pin-panel">
+        <p class="section-label">Separate PIN</p>
+        <h2 class="pin"><strong>{pin.slice(0, 4)}<span>-</span>{pin.slice(4)}</strong></h2>
+        <p>Compare this code through a different channel before you approve the Receiver.</p>
+        {#if state === 'PAIR_PENDING'}
+          <div class="approval-card">
+            {#if canApprove}
+              <strong>PIN verified</strong>
+              <p>A Receiver supplied the correct PIN. Approve this device?</p>
+              <div>
+                <button class="button primary" onclick={onApprove}>Approve Receiver</button><button
+                  class="button ghost"
+                  onclick={onReject}>Reject</button
+                >
+              </div>
+            {:else}
+              <strong>Pairing request received</strong>
+              <p>Authentication has not succeeded. Wait for the Receiver to enter the PIN.</p>
+              <button class="button ghost" onclick={onReject}>Reject request</button>
+            {/if}
+          </div>
+        {/if}
+      </aside>
+    </div>
+  {:else if state === 'PAIRED'}
+    <section class="send-panel">
+      <div class="panel-heading">
+        <h2>New secret</h2>
+        <p>Text remains available only until its expiry time.</p>
       </div>
-      <div class="panel pin">
-        <h2>Separate PIN</h2>
-        <strong>{pin.slice(0, 4)}-{pin.slice(4)}</strong>
-        <p>Compare this PIN using a separate channel.</p>
-        {#if state === 'PAIR_PENDING'}<div class="approval">
-            {#if canApprove}<p>A Receiver supplied the correct PIN. Approve this device?</p>
-              <button class="primary" onclick={onApprove}>Approve</button>{:else}<p>
-                A Receiver is attempting to pair. Authentication has not succeeded.
-              </p>{/if}
-            <button onclick={onReject}>Reject</button>
-          </div>{/if}
+      <div class="send-form">
+        <label
+          >Label<input
+            maxlength="120"
+            placeholder="For example, recovery code"
+            bind:value={label}
+          /></label
+        >
+        <label
+          >Expires<select bind:value={ttl}
+            ><option value={30}>30 seconds</option><option value={60}>1 minute</option><option
+              value={120}>2 minutes</option
+            ><option value={300}>5 minutes</option></select
+          ></label
+        >
+        <label class="secret-input"
+          >Secret text<textarea
+            maxlength="65536"
+            rows="6"
+            placeholder="Paste or type secret text"
+            bind:value
+          ></textarea></label
+        >
       </div>
-    </div>{/if}
-  {#if state === 'PAIRED'}<div class="panel">
-      <h1>Send immutable text</h1>
-      <label>Label<input maxlength="120" bind:value={label} /></label><label
-        >Secret text<textarea maxlength="65536" rows="7" bind:value></textarea></label
-      ><label
-        >Expires<select bind:value={ttl}
-          ><option value={30}>30 seconds</option><option value={60}>60 seconds</option><option
-            value={120}>2 minutes</option
-          ><option value={300}>5 minutes</option></select
-        ></label
-      ><button class="primary" disabled={sending || !label || !value} onclick={send}
-        >{sending ? 'Sending…' : 'Send secret'}</button
+      <button class="button primary" disabled={sending || !label || !value} onclick={send}
+        >{sending ? 'Encrypting…' : 'Send secret'} <span aria-hidden="true">→</span></button
       >
-    </div>{/if}
-  <div class="toolbar">
-    <button onclick={onExtend}>Extend room 10 minutes</button><button class="danger" onclick={onEnd}
-      >End room</button
+    </section>
+  {/if}
+
+  <div class="room-actions">
+    <button class="button ghost" onclick={onExtend}>Extend 10 minutes</button><button
+      class="button danger"
+      onclick={onEnd}>End room</button
     >
   </div>
-  {#each items as item (item.id)}<SecretCard {item} {onRevoke} />{/each}
+
+  {#if items.length > 0}<section class="secret-list">
+      <div class="list-heading">
+        <h2>Active secrets</h2>
+        <span>{items.length} active</span>
+      </div>
+      {#each items as item (item.id)}<SecretCard {item} {onRevoke} />{/each}
+    </section>{/if}
 </section>

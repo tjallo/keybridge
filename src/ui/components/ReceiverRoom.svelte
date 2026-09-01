@@ -8,23 +8,58 @@
   let pin = '';
 </script>
 
-<section class="panel">
-  <h1>Receiver</h1>
-  {#if state === 'PIN'}<p>Enter the separate eight-character PIN shown by the Sender.</p>
-    <label
-      >PIN<input
-        autocomplete="one-time-code"
-        maxlength="9"
-        placeholder="XXXX-XXXX"
-        bind:value={pin}
-      /></label
-    ><button class="primary" onclick={() => onSubmitPin(pin)}>Request pairing</button
-    >{:else if state === 'PENDING'}<p>
-      Waiting for Sender approval…
-    </p>{:else if state === 'PAIRED'}<p>Paired. Secret values stay hidden until you reveal them.</p>
-    {#if items.length === 0}<p>No active secrets.</p>{/if}{#each items as item (item.id)}<SecretCard
-        {item}
-        receiver
-        {onRevoke}
-      />{/each}{/if}<button class="danger" onclick={onLeave}>Leave room</button>
+<section class="receiver-page">
+  <header class="receiver-header">
+    <p class="section-label">Receiver</p>
+    <h1>{state === 'PAIRED' ? 'Your secure inbox' : 'Pair this device'}</h1>
+  </header>
+
+  {#if state === 'PIN'}
+    <div class="receiver-card">
+      <div class="receiver-icon" aria-hidden="true">↗</div>
+      <h2>Enter the separate PIN</h2>
+      <p>Ask the Sender for the eight-character PIN. Do not share it with the pairing link.</p>
+      <label class="pin-input"
+        >PIN<input
+          autocomplete="one-time-code"
+          maxlength="9"
+          placeholder="XXXX-XXXX"
+          bind:value={pin}
+        /></label
+      >
+      <button class="button primary" onclick={() => onSubmitPin(pin)}
+        >Request pairing <span aria-hidden="true">→</span></button
+      >
+    </div>
+  {:else if state === 'PENDING'}
+    <div class="receiver-card waiting-card">
+      <div class="pulse-dot" aria-hidden="true"></div>
+      <h2>Waiting for approval</h2>
+      <p>The Sender must approve this device before KeyBridge can deliver secrets.</p>
+    </div>
+  {:else if state === 'PAIRED'}
+    <div class="receiver-notice">
+      <span aria-hidden="true">✓</span>
+      <p>Paired. Secret values stay hidden until you reveal them.</p>
+    </div>
+    {#if items.length === 0}
+      <div class="empty-state">
+        <div aria-hidden="true">⌁</div>
+        <h2>Nothing here yet</h2>
+        <p>The Sender can now send encrypted text to this device.</p>
+      </div>
+    {:else}
+      <section class="secret-list">
+        <div class="list-heading">
+          <h2>Received secrets</h2>
+          <span>{items.length} active</span>
+        </div>
+        {#each items as item (item.id)}<SecretCard {item} receiver {onRevoke} />{/each}
+      </section>
+    {/if}
+  {/if}
+
+  <div class="room-actions receiver-actions">
+    <button class="button danger" onclick={onLeave}>Leave room</button>
+  </div>
 </section>

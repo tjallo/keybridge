@@ -494,17 +494,34 @@
   });
 </script>
 
-<header class="site">
-  <button
-    class="brand"
-    onclick={() => {
-      if (view === 'start' || view === 'security') view = 'start';
-    }}>KeyBridge</button
-  ><span>v{__APP_VERSION__}</span>
+<header class="site-header">
+  <div class="site-nav">
+    <button
+      class="brand"
+      onclick={() => {
+        if (view === 'start' || view === 'security') view = 'start';
+      }}
+    >
+      <span class="brand-mark" aria-hidden="true">K</span><span>KeyBridge</span>
+    </button>
+    <nav aria-label="Project links">
+      <a
+        class="source-link"
+        href="https://github.com/tjallo/keybridge"
+        rel="noreferrer"
+        target="_blank"
+        ><svg viewBox="0 0 16 16" aria-hidden="true"
+          ><path
+            d="M8 1.2a6.8 6.8 0 0 0-2.15 13.25c.34.06.46-.14.46-.33v-1.2c-1.88.4-2.28-.8-2.28-.8-.3-.78-.76-.99-.76-.99-.62-.42.05-.41.05-.41.68.05 1.04.7 1.04.7.62 1.03 1.6.73 2 .56.06-.43.24-.73.44-.9-1.5-.16-3.08-.73-3.08-3.3 0-.73.27-1.33.7-1.8-.07-.17-.3-.86.07-1.78 0 0 .57-.18 1.86.69A6.5 6.5 0 0 1 8 4.9a6.5 6.5 0 0 1 1.7.23c1.3-.87 1.86-.69 1.86-.69.38.92.15 1.61.08 1.78.43.47.7 1.07.7 1.8 0 2.58-1.58 3.14-3.09 3.3.25.2.46.56.46 1.14v1.68c0 .19.12.4.47.33A6.8 6.8 0 0 0 8 1.2Z"
+          /></svg
+        ><span>Source</span></a
+      ><span class="version">v{__APP_VERSION__}</span>
+    </nav>
+  </div>
 </header>
-<main>
-  {#if error}<div class="error" role="alert">
-      {error}<button aria-label="Dismiss error" onclick={() => (error = '')}>×</button>
+<main class="page-shell">
+  {#if error}<div class="alert" role="alert">
+      <span>{error}</span><button aria-label="Dismiss error" onclick={() => (error = '')}>×</button>
     </div>{/if}{#if view === 'start'}<StartRoom
       onCreate={createRoom}
       onSecurity={() => (view = 'security')}
@@ -527,7 +544,8 @@
       onSubmitPin={submitPin}
       onRevoke={revoke}
       onLeave={leave}
-    />{:else}<section class="panel document-panel">
+    />{:else}<section class="security-page">
+      <div class="section-label">Security</div>
       <h1>Security &amp; transparency</h1>
       <p>
         The published browser client encrypts secret payloads before transmission. The Relay does
@@ -542,13 +560,20 @@
         V1 has no forward secrecy. Clipboard content is not cleared. Browser memory and storage
         cannot guarantee secure erasure.
       </p>
-      <p>Protocol 1 · Version {__APP_VERSION__} · Source {__SOURCE_COMMIT__}</p>
+      <div class="build-details">
+        Protocol 1 · Version {__APP_VERSION__} · Source {__SOURCE_COMMIT__}
+      </div>
       <details>
         <summary>Client asset SHA-256 hashes</summary
         >{#each Object.entries(releaseAssets) as [asset, hash]}<code>{asset}: {hash}</code><br
           />{/each}
       </details>
-      <button onclick={() => (view = 'start')}>Back</button>
+      <button class="button secondary" onclick={() => (view = 'start')}>Back</button>
     </section>{/if}
 </main>
-<footer>No accounts · No analytics · Session storage only</footer>
+<footer class="site-footer">
+  <span>No accounts · No analytics · Session storage only</span>
+  <a href="https://github.com/tjallo/keybridge" rel="noreferrer" target="_blank"
+    >View source on GitHub</a
+  >
+</footer>

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy, tick } from 'svelte';
   export let item: { id: string; label: string; value: string; expiresAt: number; ttl: number };
   export let receiver = false;
   export let onRevoke: (id: string) => void;
@@ -10,7 +11,6 @@
     () => (remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000))),
     1000,
   );
-  import { onDestroy, tick } from 'svelte';
   onDestroy(() => clearInterval(timer));
   async function copy() {
     try {
@@ -27,8 +27,12 @@
 </script>
 
 <article class="secret-card" aria-label={`Secret ${item.label}`}>
-  <header><strong>{item.label}</strong><span>{remaining}s</span></header>
-  <small>Text · {item.ttl}s TTL</small>{#if receiver}<textarea
+  <header>
+    <div><strong>{item.label}</strong><small>Text · {item.ttl}s expiry</small></div>
+    <span class:expiring={remaining <= 10}>{remaining}s</span>
+  </header>
+  {#if receiver}
+    <textarea
       class="secret-value"
       bind:this={valueElement}
       readonly
@@ -36,12 +40,20 @@
       aria-label={`Value for ${item.label}`}
       value={revealed ? item.value : '••••••••••••'}
     ></textarea>
-    <div class="actions">
-      <button onclick={() => (revealed = !revealed)}>{revealed ? 'Hide' : 'Reveal'}</button><button
-        onclick={copy}>Copy</button
-      ><button class="danger" onclick={() => onRevoke(item.id)}>Revoke</button>
+    <div class="secret-actions">
+      <button class="button secondary" onclick={() => (revealed = !revealed)}
+        >{revealed ? 'Hide' : 'Reveal'}</button
+      ><button class="button secondary" onclick={copy}>Copy</button><button
+        class="button danger"
+        onclick={() => onRevoke(item.id)}>Revoke</button
+      >
     </div>
-    {#if copyFailed}<p role="alert">
+    {#if copyFailed}<p class="error-note" role="alert">
         Clipboard access failed. Select the revealed value and copy it manually.
-      </p>{/if}{:else}<button class="danger" onclick={() => onRevoke(item.id)}>Revoke</button>{/if}
+      </p>{/if}
+  {:else}
+    <div class="secret-actions">
+      <button class="button danger" onclick={() => onRevoke(item.id)}>Revoke</button>
+    </div>
+  {/if}
 </article>
