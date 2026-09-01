@@ -69,6 +69,30 @@
   const request = () => randomId();
   const wsUrl = () => `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
   const send = (value: object) => socket?.send(JSON.stringify({ version: 1, ...value }));
+  const relayErrorMessage = (code: unknown): string => {
+    switch (code) {
+      case 'busy':
+        return 'This room is full. End an active secret or try again later.';
+      case 'expired':
+        return 'This room has expired.';
+      case 'not_allowed':
+        return 'This action is not available in the current room state.';
+      case 'rate_limited':
+        return 'Too many requests. Wait a moment and try again.';
+      case 'room_unavailable':
+        return 'This room is no longer available.';
+      case 'unsupported_version':
+        return 'This browser uses an unsupported protocol version.';
+      default:
+        return 'The Relay could not process the request.';
+    }
+  };
+  const roomEndMessage = (reason: unknown): string => {
+    if (reason === 'expired') return 'The room has expired.';
+    if (reason === 'busy') return 'The room ended because it reached its capacity limit.';
+    if (reason === 'shutdown') return 'The Relay restarted. Create a new room to continue.';
+    return 'The room has ended.';
+  };
   function save() {
     if (view !== 'sender' && view !== 'receiver') return;
     const data: Stored = { role: view, roomId, roomKey, pin, credential };
@@ -226,7 +250,7 @@
         retryResume();
         return;
       }
-      error = String(message.code);
+      error = relayErrorMessage(message.code);
       return;
     }
     if (message.type === 'created') {
@@ -343,7 +367,7 @@
     if (message.type === 'room_ended') {
       clear();
       view = 'start';
-      error = `Room ended: ${String(message.reason)}`;
+      error = roomEndMessage(message.reason);
     }
   }
   async function receiveItem(envelope: EncryptedEnvelope) {

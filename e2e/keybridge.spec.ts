@@ -67,7 +67,7 @@ test('wrong PIN rejection recovers and Sender reload preserves approval', async 
   await expect(sender.getByText('Pairing authentication failed')).toBeVisible();
   await sender.getByRole('button', { name: 'Reject' }).click();
   await expect(receiver.getByText('Enter the new PIN')).toBeVisible();
-  await expect(sender.locator('.status')).toContainText('WAITING');
+  await expect(sender.locator('.status')).toContainText('Waiting for Receiver');
   const newPin = (await sender.locator('.pin strong').textContent())!;
   await expect(receiver.getByLabel('PIN')).toBeVisible();
   await receiver.getByLabel('PIN').fill(newPin);
@@ -168,5 +168,5 @@ test('security headers, transparency, fragment removal, and second Receiver reje
   await first.getByRole('button', { name: 'Request pairing' }).click();
   const second = await browser.newPage();
   await second.goto(link);
-  await expect(second.getByRole('alert')).toContainText('room_unavailable');
+  await expect(second.getByRole('alert')).toContainText('room is no longer available');
 });

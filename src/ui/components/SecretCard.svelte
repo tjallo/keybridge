@@ -16,6 +16,12 @@
   let valueElement: HTMLTextAreaElement;
   let remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000));
 
+  const ttlLabel = (ttl: number): string => {
+    if (ttl < 60) return `${ttl} seconds`;
+    if (ttl === 60) return '1 minute';
+    return `${ttl / 60} minutes`;
+  };
+
   const timer = setInterval(
     () => (remaining = Math.max(0, Math.ceil((item.expiresAt - Date.now()) / 1000))),
     1000,
@@ -43,7 +49,7 @@
   <header>
     <div>
       <strong>{item.label}</strong>
-      <small>Text · {item.ttl}s expiry</small>
+      <small>Text · expires after {ttlLabel(item.ttl)}</small>
     </div>
     <span class:expiring={remaining <= 10}>{remaining}s</span>
   </header>

@@ -30,6 +30,15 @@
   let copyFailed = false;
   let sending = false;
 
+  const stateLabel = (roomState: string): string => {
+    if (roomState === 'WAITING') return 'Waiting for Receiver';
+    if (roomState === 'PAIR_PENDING') return 'Pairing request';
+    if (roomState === 'PAIRED') return 'Paired';
+    if (roomState === 'RECEIVER_GRACE') return 'Receiver reconnecting';
+    if (roomState === 'SENDER_GRACE') return 'Sender reconnecting';
+    return 'Room ended';
+  };
+
   function drawQrCode(): void {
     const qr = qrcode(0, 'M');
     qr.addData(link);
@@ -94,7 +103,7 @@
     </div>
 
     <div class="room-meta status">
-      <span class:connected={state === 'PAIRED'}>{state.replaceAll('_', ' ')}</span>
+      <span class:connected={state === 'PAIRED'}>{stateLabel(state)}</span>
       <time>Ends {new Date(deadline).toLocaleTimeString()}</time>
     </div>
   </header>
