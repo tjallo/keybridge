@@ -4,7 +4,8 @@ export const MAX_ENVELOPE_BYTES = 72 * 1024;
 export const MAX_PLAINTEXT_BYTES = 64 * 1024;
 export const ITEM_TTLS = [30, 60, 120, 300] as const;
 export type Direction = 'receiver-to-sender' | 'sender-to-receiver';
-export type EnvelopeKind = 'pair-request' | 'pair-response' | 'item' | 'control';
+export type EnvelopeKind =
+  'pair-request' | 'pair-response' | 'item' | 'control';
 
 /** Public authenticated fields. Tuple order is frozen for protocol version 1. */
 export interface EncryptedEnvelope {
@@ -39,8 +40,11 @@ export function isEnvelope(value: unknown): value is EncryptedEnvelope {
     /^[A-Za-z0-9_-]{22}$/.test(e.roomId) &&
     typeof e.messageId === 'string' &&
     /^[A-Za-z0-9_-]{16,64}$/.test(e.messageId) &&
-    (e.direction === 'sender-to-receiver' || e.direction === 'receiver-to-sender') &&
-    ['pair-request', 'pair-response', 'item', 'control'].includes(String(e.kind)) &&
+    (e.direction === 'sender-to-receiver' ||
+      e.direction === 'receiver-to-sender') &&
+    ['pair-request', 'pair-response', 'item', 'control'].includes(
+      String(e.kind),
+    ) &&
     (e.expiresAt === null ||
       (typeof e.expiresAt === 'number' && Number.isSafeInteger(e.expiresAt))) &&
     typeof e.nonce === 'string' &&
@@ -64,6 +68,8 @@ export function matchesEnvelope(
     envelope.roomId === expected.roomId &&
     envelope.direction === expected.direction &&
     envelope.kind === expected.kind &&
-    (expected.expiresAt === 'null' ? envelope.expiresAt === null : envelope.expiresAt !== null)
+    (expected.expiresAt === 'null'
+      ? envelope.expiresAt === null
+      : envelope.expiresAt !== null)
   );
 }

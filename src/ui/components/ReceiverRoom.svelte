@@ -1,7 +1,13 @@
 <script lang="ts">
   import SecretCard from './SecretCard.svelte';
   export let state: string;
-  export let items: { id: string; label: string; value: string; expiresAt: number; ttl: number }[];
+  export let items: {
+    id: string;
+    label: string;
+    value: string;
+    expiresAt: number;
+    ttl: number;
+  }[];
   export let onSubmitPin: (pin: string) => void;
   export let onRevoke: (id: string) => void;
   export let onLeave: () => void;
@@ -16,9 +22,17 @@
 
   {#if state === 'PIN'}
     <div class="receiver-card">
-      <div class="receiver-icon" aria-hidden="true">↗</div>
+      <div
+        class="receiver-icon"
+        aria-hidden="true"
+      >
+        ↗
+      </div>
       <h2>Enter the separate PIN</h2>
-      <p>Ask the Sender for the eight-character PIN. Do not share it with the pairing link.</p>
+      <p>
+        Ask the Sender for the eight-character PIN. Do not share it with the
+        pairing link.
+      </p>
       <label class="pin-input"
         >PIN<input
           autocomplete="one-time-code"
@@ -27,15 +41,23 @@
           bind:value={pin}
         /></label
       >
-      <button class="button primary" onclick={() => onSubmitPin(pin)}
+      <button
+        class="button primary"
+        onclick={() => onSubmitPin(pin)}
         >Request pairing <span aria-hidden="true">→</span></button
       >
     </div>
   {:else if state === 'PENDING'}
     <div class="receiver-card waiting-card">
-      <div class="pulse-dot" aria-hidden="true"></div>
+      <div
+        class="pulse-dot"
+        aria-hidden="true"
+      ></div>
       <h2>Waiting for approval</h2>
-      <p>The Sender must approve this device before KeyBridge can deliver secrets.</p>
+      <p>
+        The Sender must approve this device before KeyBridge can deliver
+        secrets.
+      </p>
     </div>
   {:else if state === 'PAIRED'}
     <div class="receiver-notice">
@@ -54,12 +76,19 @@
           <h2>Received secrets</h2>
           <span>{items.length} active</span>
         </div>
-        {#each items as item (item.id)}<SecretCard {item} receiver {onRevoke} />{/each}
+        {#each items as item (item.id)}<SecretCard
+            {item}
+            receiver
+            {onRevoke}
+          />{/each}
       </section>
     {/if}
   {/if}
 
   <div class="room-actions receiver-actions">
-    <button class="button danger" onclick={onLeave}>Leave room</button>
+    <button
+      class="button danger"
+      onclick={onLeave}>Leave room</button
+    >
   </div>
 </section>

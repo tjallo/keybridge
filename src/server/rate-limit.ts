@@ -7,8 +7,13 @@ export function addressGroup(address: string): string {
     const left = leftText ? leftText.split(':') : [];
     const right = rightText ? rightText.split(':') : [];
     const missing = 8 - left.length - right.length;
-    const parts = rightText === undefined ? left : [...left, ...Array(missing).fill('0'), ...right];
-    const prefix = parts.slice(0, 4).map((part) => Number.parseInt(part || '0', 16).toString(16));
+    const parts =
+      rightText === undefined
+        ? left
+        : [...left, ...Array(missing).fill('0'), ...right];
+    const prefix = parts
+      .slice(0, 4)
+      .map((part) => Number.parseInt(part || '0', 16).toString(16));
     return `${prefix.join(':')}::/64`;
   }
   return 'unknown';
@@ -41,7 +46,9 @@ export class RateLimiter {
   }
   canAttemptPairing(group: string, now: number): boolean {
     const entry = this.#get(group);
-    entry.pendingAttempts = entry.pendingAttempts.filter((time) => now - time < 600_000);
+    entry.pendingAttempts = entry.pendingAttempts.filter(
+      (time) => now - time < 600_000,
+    );
     if (entry.pendingAttempts.length >= 20) return false;
     entry.pendingAttempts.push(now);
     return true;
@@ -49,8 +56,14 @@ export class RateLimiter {
   cleanup(now: number): void {
     for (const [key, entry] of this.#entries) {
       entry.rooms = entry.rooms.filter((time) => now - time < 600_000);
-      entry.pendingAttempts = entry.pendingAttempts.filter((time) => now - time < 600_000);
-      if (!entry.connections && !entry.rooms.length && !entry.pendingAttempts.length)
+      entry.pendingAttempts = entry.pendingAttempts.filter(
+        (time) => now - time < 600_000,
+      );
+      if (
+        !entry.connections &&
+        !entry.rooms.length &&
+        !entry.pendingAttempts.length
+      )
         this.#entries.delete(key);
     }
   }

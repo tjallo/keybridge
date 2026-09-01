@@ -22,14 +22,20 @@ export function securityHeaders(response: ServerResponse, path: string): void {
     'Permissions-Policy',
     'accelerometer=(), ambient-light-sensor=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), speaker-selection=(), usb=(), web-share=(), xr-spatial-tracking=()',
   );
-  response.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  response.setHeader(
+    'Strict-Transport-Security',
+    'max-age=31536000; includeSubDomains',
+  );
   response.setHeader(
     'Cache-Control',
-    path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-store',
+    path.startsWith('/assets/')
+      ? 'public, max-age=31536000, immutable'
+      : 'no-store',
   );
 }
 export function sourceAddress(request: IncomingMessage): string {
-  const remote = request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown';
+  const remote =
+    request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown';
   const trusted = new Set(
     (process.env.TRUSTED_PROXY_ADDRESSES ?? '')
       .split(',')
@@ -38,7 +44,8 @@ export function sourceAddress(request: IncomingMessage): string {
   );
   if (process.env.TRUST_PROXY === '1' && trusted.has(remote)) {
     const forwarded = request.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') return forwarded.split(',')[0]?.trim() ?? 'unknown';
+    if (typeof forwarded === 'string')
+      return forwarded.split(',')[0]?.trim() ?? 'unknown';
   }
   return remote;
 }

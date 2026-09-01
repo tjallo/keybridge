@@ -10,7 +10,8 @@ async function filesIn(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...(await filesIn(path)));
-    else if (entry.isFile() && relative(root, path) !== output) files.push(path);
+    else if (entry.isFile() && relative(root, path) !== output)
+      files.push(path);
   }
   return files;
 }

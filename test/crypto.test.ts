@@ -9,7 +9,9 @@ import {
   ReplayGuard,
 } from '../src/ui/crypto.ts';
 const hex = (value: string) =>
-  Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16));
+  Uint8Array.from(value.match(/../g) ?? [], (byte) =>
+    Number.parseInt(byte, 16),
+  );
 const toHex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
 test('PIN generation rejects bytes outside the unbiased range', () => {
   const original = crypto.getRandomValues;
@@ -29,9 +31,13 @@ test('PIN generation rejects bytes outside the unbiased range', () => {
 });
 
 test('fixed RFC 5869 HKDF-SHA256 vector', async () => {
-  const material = await crypto.subtle.importKey('raw', hex('0b'.repeat(22)), 'HKDF', false, [
-    'deriveBits',
-  ]);
+  const material = await crypto.subtle.importKey(
+    'raw',
+    hex('0b'.repeat(22)),
+    'HKDF',
+    false,
+    ['deriveBits'],
+  );
   const bits = await crypto.subtle.deriveBits(
     {
       name: 'HKDF',
@@ -42,12 +48,19 @@ test('fixed RFC 5869 HKDF-SHA256 vector', async () => {
     material,
     256,
   );
-  assert.equal(toHex(bits), '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf');
+  assert.equal(
+    toHex(bits),
+    '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf',
+  );
 });
 test('fixed AES-256-GCM vector', async () => {
-  const key = await crypto.subtle.importKey('raw', new Uint8Array(32), { name: 'AES-GCM' }, false, [
-    'encrypt',
-  ]);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new Uint8Array(32),
+    { name: 'AES-GCM' },
+    false,
+    ['encrypt'],
+  );
   const output = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv: new Uint8Array(12) },
     key,
@@ -73,7 +86,12 @@ test('both browsers derive matching pairing and directional session keys', async
     b = await deriveSessionKeys(receiver, roomId, 'receiver', 'sender');
   const envelope = await encryptJson(
     a.item,
-    { roomId, direction: 'sender-to-receiver', kind: 'item', expiresAt: Date.now() + 1000 },
+    {
+      roomId,
+      direction: 'sender-to-receiver',
+      kind: 'item',
+      expiresAt: Date.now() + 1000,
+    },
     { sentinel: 'KNOWN-PLAINTEXT' },
   );
   assert.ok(!JSON.stringify(envelope).includes('KNOWN-PLAINTEXT'));
@@ -90,7 +108,12 @@ test('directional control envelopes authenticate revocation identifiers', async 
     'AAAAAAAAAAAAAAAAAAAAAA',
     '23456789',
   );
-  const keys = await deriveSessionKeys(pairing, 'AAAAAAAAAAAAAAAAAAAAAA', 'receiver', 'sender');
+  const keys = await deriveSessionKeys(
+    pairing,
+    'AAAAAAAAAAAAAAAAAAAAAA',
+    'receiver',
+    'sender',
+  );
   const itemId = 'IIIIIIIIIIIIIIIIIIIIII';
   const envelope = await encryptJson(
     keys.senderControl,
@@ -105,12 +128,16 @@ test('directional control envelopes authenticate revocation identifiers', async 
   );
   assert.equal(envelope.messageId, 'CCCCCCCCCCCCCCCCCCCCCC');
   assert.equal(
-    (await decryptJson<{ itemId: string }>(keys.senderControl, envelope)).itemId,
+    (await decryptJson<{ itemId: string }>(keys.senderControl, envelope))
+      .itemId,
     itemId,
   );
   await assert.rejects(() => decryptJson(keys.receiverControl, envelope));
   await assert.rejects(() =>
-    decryptJson(keys.senderControl, { ...envelope, direction: 'receiver-to-sender' }),
+    decryptJson(keys.senderControl, {
+      ...envelope,
+      direction: 'receiver-to-sender',
+    }),
   );
 });
 
@@ -133,10 +160,14 @@ test('ciphertext, AAD modification, and repeated message identifiers are rejecte
   await assert.rejects(() =>
     decryptJson(key, {
       ...envelope,
-      ciphertext: (envelope.ciphertext[0] === 'A' ? 'B' : 'A') + envelope.ciphertext.slice(1),
+      ciphertext:
+        (envelope.ciphertext[0] === 'A' ? 'B' : 'A') +
+        envelope.ciphertext.slice(1),
     }),
   );
-  await assert.rejects(() => decryptJson(key, { ...envelope, direction: 'sender-to-receiver' }));
+  await assert.rejects(() =>
+    decryptJson(key, { ...envelope, direction: 'sender-to-receiver' }),
+  );
   const guard = new ReplayGuard();
   assert.equal(guard.accept(envelope.messageId), true);
   assert.equal(guard.accept(envelope.messageId), false);

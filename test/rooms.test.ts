@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Room, GRACE_MS, PENDING_MS, ROOM_TTL_MS } from '../build/server/rooms.js';
+import {
+  Room,
+  GRACE_MS,
+  PENDING_MS,
+  ROOM_TTL_MS,
+} from '../build/server/rooms.js';
 const room = () => new Room('AAAAAAAAAAAAAAAAAAAAAA', '127.0.0.1', 1000);
 test('room transitions pending, reject, approve and receiver grace', () => {
   const r = room();
@@ -66,7 +71,10 @@ test('sender resume restores prior active state', () => {
   r.disconnect('sender', 1002);
   r.resume('sender', r.senderCredential, 1003);
   assert.equal(r.state, 'PAIRED');
-  assert.throws(() => r.resume('sender', r.senderCredential, 1004), /room_unavailable/);
+  assert.throws(
+    () => r.resume('sender', r.senderCredential, 1004),
+    /room_unavailable/,
+  );
 });
 
 test('both roles reconnect in either disconnect order with independent grace', () => {
@@ -119,7 +127,11 @@ test('one reserved receiver can send only one pairing frame', () => {
 
 test('completed request outcomes survive reconnect and are not repeated', () => {
   const r = room();
-  const result = { type: 'ack', requestId: 'AAAAAAAAAAAAAAAAAAAAAA', deadline: r.deadline };
+  const result = {
+    type: 'ack',
+    requestId: 'AAAAAAAAAAAAAAAAAAAAAA',
+    deadline: r.deadline,
+  };
   r.completeRequest(result.requestId, result);
   assert.deepEqual(r.requestResult(result.requestId), result);
   r.disconnect('sender', 1001);

@@ -15,11 +15,15 @@ export function randomBytes(length: number): Uint8Array<ArrayBuffer> {
 export function base64url(bytes: Uint8Array): string {
   let binary = '';
   for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  return btoa(binary)
+    .replaceAll('+', '-')
+    .replaceAll('/', '_')
+    .replace(/=+$/, '');
 }
 export function fromBase64url(value: string): Uint8Array<ArrayBuffer> {
   const binary = atob(
-    value.replaceAll('-', '+').replaceAll('_', '/') + '==='.slice((value.length + 3) % 4),
+    value.replaceAll('-', '+').replaceAll('_', '/') +
+      '==='.slice((value.length + 3) % 4),
   );
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
@@ -39,7 +43,10 @@ export function generatePin(): string {
 }
 export function normalizePin(pin: string): string {
   const value = pin.toUpperCase().replace('-', '');
-  if (value.length !== 8 || [...value].some((character) => !PIN_ALPHABET.includes(character)))
+  if (
+    value.length !== 8 ||
+    [...value].some((character) => !PIN_ALPHABET.includes(character))
+  )
     throw new Error('PIN must contain eight allowed characters');
   return value;
 }
@@ -49,7 +56,9 @@ async function hkdf(
   info: string,
   extractable = false,
 ): Promise<CryptoKey> {
-  const material = await crypto.subtle.importKey('raw', input, 'HKDF', false, ['deriveKey']);
+  const material = await crypto.subtle.importKey('raw', input, 'HKDF', false, [
+    'deriveKey',
+  ]);
   return crypto.subtle.deriveKey(
     { name: 'HKDF', hash: 'SHA-256', salt, info: encoder.encode(info) },
     material,
@@ -81,7 +90,9 @@ export async function deriveSessionKeys(
   receiverNonce: string,
   senderNonce: string,
 ): Promise<SessionKeys> {
-  const pairingBytes = new Uint8Array(await crypto.subtle.exportKey('raw', pairingKey));
+  const pairingBytes = new Uint8Array(
+    await crypto.subtle.exportKey('raw', pairingKey),
+  );
   const root = await hkdf(
     pairingBytes,
     encoder.encode(`${roomId}/${receiverNonce}/${senderNonce}`),
@@ -90,7 +101,11 @@ export async function deriveSessionKeys(
   );
   const raw = new Uint8Array(await crypto.subtle.exportKey('raw', root));
   return {
-    item: await hkdf(raw, encoder.encode(roomId), 'keybridge-v1/sender-to-receiver/item'),
+    item: await hkdf(
+      raw,
+      encoder.encode(roomId),
+      'keybridge-v1/sender-to-receiver/item',
+    ),
     senderControl: await hkdf(
       raw,
       encoder.encode(roomId),
@@ -139,7 +154,10 @@ export async function encryptJson(
   return envelope;
 }
 export function encodePlaintext(
-  envelope: Pick<EncryptedEnvelope, 'roomId' | 'messageId' | 'direction' | 'kind' | 'expiresAt'>,
+  envelope: Pick<
+    EncryptedEnvelope,
+    'roomId' | 'messageId' | 'direction' | 'kind' | 'expiresAt'
+  >,
   body: object,
 ): Uint8Array<ArrayBuffer> {
   return encoder.encode(
@@ -154,7 +172,10 @@ export function encodePlaintext(
   );
 }
 
-export async function decryptJson<T>(key: CryptoKey, envelope: EncryptedEnvelope): Promise<T> {
+export async function decryptJson<T>(
+  key: CryptoKey,
+  envelope: EncryptedEnvelope,
+): Promise<T> {
   const plaintext = await crypto.subtle.decrypt(
     {
       name: 'AES-GCM',
@@ -165,8 +186,15 @@ export async function decryptJson<T>(key: CryptoKey, envelope: EncryptedEnvelope
     fromBase64url(envelope.ciphertext),
   );
   const body = JSON.parse(decoder.decode(plaintext)) as Record<string, unknown>;
-  for (const field of ['roomId', 'messageId', 'direction', 'kind', 'expiresAt'] as const)
-    if (body[field] !== envelope[field]) throw new Error('Authenticated header mismatch');
+  for (const field of [
+    'roomId',
+    'messageId',
+    'direction',
+    'kind',
+    'expiresAt',
+  ] as const)
+    if (body[field] !== envelope[field])
+      throw new Error('Authenticated header mismatch');
   return body as T;
 }
 export class ReplayGuard {

@@ -2,5 +2,6 @@
   "plugins": ["prettier-plugin-svelte"],
   "singleQuote": true,
   "trailingComma": "all",
-  "printWidth": 100
+  "printWidth": 80,
+  "singleAttributePerLine": true
 }

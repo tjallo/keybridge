@@ -39,12 +39,20 @@ export class Relay {
       maxPayload: MAX_FRAME_BYTES,
       perMessageDeflate: false,
     });
-    server.on('upgrade', (request, socket, head) => this.#upgrade(request, socket, head));
-    this.#wss.on('connection', (socket, request) => this.#connection(socket, request));
+    server.on('upgrade', (request, socket, head) =>
+      this.#upgrade(request, socket, head),
+    );
+    this.#wss.on('connection', (socket, request) =>
+      this.#connection(socket, request),
+    );
     this.#timer = setInterval(() => this.#maintenance(), 5_000);
     this.#timer.unref();
   }
-  #upgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void {
+  #upgrade(
+    request: IncomingMessage,
+    socket: import('node:stream').Duplex,
+    head: Buffer,
+  ): void {
     let url: URL;
     try {
       url = new URL(request.url ?? '/', 'http://internal');
@@ -59,7 +67,9 @@ export class Relay {
     }
     const group = addressGroup(sourceAddress(request));
     if (!this.limiter.canConnect(group)) {
-      socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
+      socket.write(
+        'HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n',
+      );
       socket.destroy();
       return;
     }
@@ -98,7 +108,10 @@ export class Relay {
     if (!message) {
       try {
         const raw = JSON.parse(text) as { version?: unknown };
-        this.#fail(peer, raw.version !== 1 ? 'unsupported_version' : 'invalid_message');
+        this.#fail(
+          peer,
+          raw.version !== 1 ? 'unsupported_version' : 'invalid_message',
+        );
       } catch {
         this.#fail(peer, 'invalid_message');
       }
@@ -117,10 +130,18 @@ export class Relay {
     peer.commandTimes.push(now);
     try {
       if (!peer.role) {
-        if (message.type === 'create') this.#create(peer, message.roomId, message.requestId);
-        else if (message.type === 'join') this.#join(peer, message.roomId, message.requestId);
+        if (message.type === 'create')
+          this.#create(peer, message.roomId, message.requestId);
+        else if (message.type === 'join')
+          this.#join(peer, message.roomId, message.requestId);
         else if (message.type === 'resume')
-          this.#resume(peer, message.roomId, message.role, message.credential, message.requestId);
+          this.#resume(
+            peer,
+            message.roomId,
+            message.role,
+            message.credential,
+            message.requestId,
+          );
         else this.#fail(peer, 'not_allowed');
         return;
       }
@@ -135,7 +156,8 @@ export class Relay {
     const live = [...this.rooms.values()].filter(
       (room) => room.addressGroup === peer.group && room.state !== 'ENDED',
     ).length;
-    if (this.limiter.canCreate(peer.group, live, now) !== 'ok') throw new Error('rate_limited');
+    if (this.limiter.canCreate(peer.group, live, now) !== 'ok')
+      throw new Error('rate_limited');
     if (this.rooms.has(roomId)) throw new Error('room_unavailable');
     const room = new Room(roomId, peer.group, now);
     this.rooms.set(roomId, room);
@@ -151,7 +173,8 @@ export class Relay {
   }
   #join(peer: Peer, roomId: string, requestId: string): void {
     const now = Date.now();
-    if (!this.limiter.canAttemptPairing(peer.group, now)) throw new Error('rate_limited');
+    if (!this.limiter.canAttemptPairing(peer.group, now))
+      throw new Error('rate_limited');
     const room = this.rooms.get(roomId);
     if (!room) throw new Error('room_unavailable');
     room.reserve(now);
@@ -184,9 +207,16 @@ export class Relay {
       deadline: room.deadline,
       items: room.snapshot(Date.now()),
     });
-    this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline }, role);
+    this.#notify(
+      room,
+      { type: 'room_state', state: room.state, deadline: room.deadline },
+      role,
+    );
   }
-  #active(peer: Peer, message: Exclude<ReturnType<typeof parseMessage>, null>): void {
+  #active(
+    peer: Peer,
+    message: Exclude<ReturnType<typeof parseMessage>, null>,
+  ): void {
     const room = peer.room;
     if (!room || message.type === 'pong') return;
     const cached = room.requestResult(message.requestId);
@@ -199,18 +229,33 @@ export class Relay {
     if (message.type === 'pair' && peer.role === 'receiver') {
       room.recordPairFrame();
       const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'receiver-to-sender', 'pair-request', 'null');
+      this.#validateEnvelope(
+        envelope,
+        room,
+        'receiver-to-sender',
+        'pair-request',
+        'null',
+      );
       this.#sendRole(room, 'sender', {
         type: 'pair_request',
         envelope,
         requestId: message.requestId,
       });
-      this.#complete(peer, room, message.requestId, { type: 'ack', requestId: message.requestId });
+      this.#complete(peer, room, message.requestId, {
+        type: 'ack',
+        requestId: message.requestId,
+      });
       return;
     }
     if (message.type === 'approve' && peer.role === 'sender') {
       const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'pair-response', 'null');
+      this.#validateEnvelope(
+        envelope,
+        room,
+        'sender-to-receiver',
+        'pair-response',
+        'null',
+      );
       const credential = room.approve(now);
       this.#sendRole(room, 'receiver', {
         type: 'approved',
@@ -238,7 +283,13 @@ export class Relay {
     }
     if (message.type === 'item' && peer.role === 'sender') {
       const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'item', 'present');
+      this.#validateEnvelope(
+        envelope,
+        room,
+        'sender-to-receiver',
+        'item',
+        'present',
+      );
       if (
         envelope.expiresAt === null ||
         envelope.expiresAt <= now ||
@@ -257,7 +308,8 @@ export class Relay {
     }
     if (message.type === 'revoke' && peer.role !== null) {
       const envelope = message.envelope as EncryptedEnvelope;
-      const direction = peer.role === 'sender' ? 'sender-to-receiver' : 'receiver-to-sender';
+      const direction =
+        peer.role === 'sender' ? 'sender-to-receiver' : 'receiver-to-sender';
       this.#validateEnvelope(envelope, room, direction, 'control', 'null');
       room.revoke(message.itemId);
       const otherRole = peer.role === 'sender' ? 'receiver' : 'sender';
@@ -274,7 +326,11 @@ export class Relay {
     }
     if (message.type === 'extend' && peer.role === 'sender') {
       room.extend(now);
-      this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline });
+      this.#notify(room, {
+        type: 'room_state',
+        state: room.state,
+        deadline: room.deadline,
+      });
       this.#complete(peer, room, message.requestId, {
         type: 'ack',
         requestId: message.requestId,
@@ -309,7 +365,12 @@ export class Relay {
   ): void {
     if (
       Buffer.byteLength(JSON.stringify(envelope)) > MAX_ENVELOPE_BYTES ||
-      !matchesEnvelope(envelope, { roomId: room.id, direction, kind, expiresAt })
+      !matchesEnvelope(envelope, {
+        roomId: room.id,
+        direction,
+        kind,
+        expiresAt,
+      })
     )
       throw new Error('invalid_message');
   }
@@ -354,8 +415,13 @@ export class Relay {
       retained += room.retainedBytes;
       if (room.state === 'ENDED') this.#end(room, 'expired');
       else if (room.state !== priorState) {
-        this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline });
-        if (priorState === 'PAIR_PENDING' && room.state === 'WAITING') this.#detachReceiver(room);
+        this.#notify(room, {
+          type: 'room_state',
+          state: room.state,
+          deadline: room.deadline,
+        });
+        if (priorState === 'PAIR_PENDING' && room.state === 'WAITING')
+          this.#detachReceiver(room);
       }
     }
     if (retained > 128 * 1024 * 1024) {
@@ -412,7 +478,11 @@ export class Relay {
       ].includes(error.message)
         ? error.message
         : 'invalid_message';
-    this.#send(peer, { type: 'error', code, ...(requestId ? { requestId } : {}) });
+    this.#send(peer, {
+      type: 'error',
+      code,
+      ...(requestId ? { requestId } : {}),
+    });
     if (code === 'invalid_message') peer.socket.close(1007, code);
   }
   #fail(peer: Peer, code: string): void {

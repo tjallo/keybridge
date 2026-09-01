@@ -21,9 +21,15 @@ const envelope = (
   nonce: 'AAAAAAAAAAAAAAAA',
   ciphertext: 'encrypted-by-browser',
 });
-function event(socket: WebSocket, type: string): Promise<Record<string, unknown>> {
+function event(
+  socket: WebSocket,
+  type: string,
+): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`timeout ${type}`)), 2000);
+    const timeout = setTimeout(
+      () => reject(new Error(`timeout ${type}`)),
+      2000,
+    );
     const handler = (data: WebSocket.RawData) => {
       const value = JSON.parse(data.toString()) as Record<string, unknown>;
       if (value.type === type) {
@@ -37,7 +43,9 @@ function event(socket: WebSocket, type: string): Promise<Record<string, unknown>
 }
 function connect(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: 'http://localhost:3000' });
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      origin: 'http://localhost:3000',
+    });
     ws.once('open', () => resolve(ws));
     ws.once('error', reject);
   });
@@ -57,14 +65,35 @@ test('relay creates, pairs one receiver, retains only ciphertext, revokes, and e
     sender.terminate();
     receiver.terminate();
   });
-  sender.send(JSON.stringify({ version: 1, type: 'create', roomId: id('A'), requestId: id('R') }));
+  sender.send(
+    JSON.stringify({
+      version: 1,
+      type: 'create',
+      roomId: id('A'),
+      requestId: id('R'),
+    }),
+  );
   const created = await event(sender, 'created');
   assert.equal(typeof created.credential, 'string');
-  receiver.send(JSON.stringify({ version: 1, type: 'join', roomId: id('A'), requestId: id('J') }));
+  receiver.send(
+    JSON.stringify({
+      version: 1,
+      type: 'join',
+      roomId: id('A'),
+      requestId: id('J'),
+    }),
+  );
   await event(receiver, 'joined');
   const second = await connect(port);
   t.after(() => second.terminate());
-  second.send(JSON.stringify({ version: 1, type: 'join', roomId: id('A'), requestId: id('K') }));
+  second.send(
+    JSON.stringify({
+      version: 1,
+      type: 'join',
+      roomId: id('A'),
+      requestId: id('K'),
+    }),
+  );
   assert.equal((await event(second, 'error')).code, 'room_unavailable');
   receiver.send(
     JSON.stringify({
@@ -80,7 +109,13 @@ test('relay creates, pairs one receiver, retains only ciphertext, revokes, and e
       version: 1,
       type: 'pair',
       requestId: id('T'),
-      envelope: envelope('pair-request', 'receiver-to-sender', id('A'), null, id('U')),
+      envelope: envelope(
+        'pair-request',
+        'receiver-to-sender',
+        id('A'),
+        null,
+        id('U'),
+      ),
     }),
   );
   assert.equal((await event(receiver, 'error')).code, 'rate_limited');
@@ -89,17 +124,44 @@ test('relay creates, pairs one receiver, retains only ciphertext, revokes, and e
       version: 1,
       type: 'approve',
       requestId: id('Q'),
-      envelope: envelope('pair-response', 'sender-to-receiver', id('A'), null, id('N')),
+      envelope: envelope(
+        'pair-response',
+        'sender-to-receiver',
+        id('A'),
+        null,
+        id('N'),
+      ),
     }),
   );
   const approved = await event(receiver, 'approved');
   assert.equal(typeof approved.credential, 'string');
-  const item = envelope('item', 'sender-to-receiver', id('A'), Date.now() + 30_000, id('I'));
-  sender.send(JSON.stringify({ version: 1, type: 'item', requestId: id('S'), envelope: item }));
+  const item = envelope(
+    'item',
+    'sender-to-receiver',
+    id('A'),
+    Date.now() + 30_000,
+    id('I'),
+  );
+  sender.send(
+    JSON.stringify({
+      version: 1,
+      type: 'item',
+      requestId: id('S'),
+      envelope: item,
+    }),
+  );
   assert.deepEqual((await event(receiver, 'item')).envelope, item);
   assert.equal(relay.rooms.get(id('A'))?.retainedBytes! > 0, true);
-  assert.ok(!JSON.stringify(relay.rooms.get(id('A'))).includes('KNOWN-PLAINTEXT'));
-  const control = envelope('control', 'receiver-to-sender', id('A'), null, id('C'));
+  assert.ok(
+    !JSON.stringify(relay.rooms.get(id('A'))).includes('KNOWN-PLAINTEXT'),
+  );
+  const control = envelope(
+    'control',
+    'receiver-to-sender',
+    id('A'),
+    null,
+    id('C'),
+  );
   receiver.send(
     JSON.stringify({
       version: 1,
@@ -142,11 +204,22 @@ test('completed mutation outcome remains idempotent across Sender reconnect', as
   });
   const port = (server.address() as { port: number }).port;
   const sender = await connect(port);
-  sender.send(JSON.stringify({ version: 1, type: 'create', roomId: id('D'), requestId: id('1') }));
+  sender.send(
+    JSON.stringify({
+      version: 1,
+      type: 'create',
+      roomId: id('D'),
+      requestId: id('1'),
+    }),
+  );
   const created = await event(sender, 'created');
-  sender.send(JSON.stringify({ version: 1, type: 'extend', requestId: id('2') }));
+  sender.send(
+    JSON.stringify({ version: 1, type: 'extend', requestId: id('2') }),
+  );
   const first = await event(sender, 'ack');
-  const disconnected = new Promise<void>((resolve) => sender.once('close', () => resolve()));
+  const disconnected = new Promise<void>((resolve) =>
+    sender.once('close', () => resolve()),
+  );
   sender.terminate();
   await disconnected;
   const resumed = await connect(port);
@@ -162,7 +235,9 @@ test('completed mutation outcome remains idempotent across Sender reconnect', as
     }),
   );
   await event(resumed, 'resumed');
-  resumed.send(JSON.stringify({ version: 1, type: 'extend', requestId: id('2') }));
+  resumed.send(
+    JSON.stringify({ version: 1, type: 'extend', requestId: id('2') }),
+  );
   const duplicate = await event(resumed, 'ack');
   assert.equal(duplicate.deadline, first.deadline);
   assert.equal(relay.rooms.get(id('D'))?.deadline, first.deadline);
@@ -174,7 +249,9 @@ test('shutdown closes an upgraded socket that has not selected a role', async ()
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const port = (server.address() as { port: number }).port;
   const socket = await connect(port);
-  const closed = new Promise<number>((resolve) => socket.once('close', resolve));
+  const closed = new Promise<number>((resolve) =>
+    socket.once('close', resolve),
+  );
   relay.shutdown();
   assert.equal(await closed, 1001);
   await new Promise<void>((resolve) => server.close(() => resolve()));
