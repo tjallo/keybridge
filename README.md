@@ -1,110 +1,110 @@
+<div align="center">
+
 # KeyBridge
 
-KeyBridge transfers short-lived encrypted text from one desktop Sender to one phone Receiver. It uses an in-memory Relay. It has no accounts, database, analytics, files, or persistent vault.
+**Send short-lived encrypted text from a desktop browser to a phone browser.**
 
-KeyBridge is for short-lived secrets such as passwords, tokens, recovery codes, and configuration text. It is not a password manager or a long-term secret store.
+[![Checks](https://github.com/tjallo/keybridge/actions/workflows/checks.yaml/badge.svg)](https://github.com/tjallo/keybridge/actions/workflows/checks.yaml)
+[![Release](https://img.shields.io/github/v/release/tjallo/keybridge?sort=semver)](https://github.com/tjallo/keybridge/releases)
+[![Container](https://img.shields.io/badge/GHCR-ghcr.io%2Ftjallo%2Fkeybridge-2496ED?logo=docker&logoColor=white)](https://github.com/tjallo/keybridge/pkgs/container/keybridge)
+[![License](https://img.shields.io/github/license/tjallo/keybridge)](LICENSE)
 
-## Security model
+No accounts · No database · No analytics · No persistent vault
 
-The browser encrypts each secret before it sends the secret to the Relay. The Relay does not receive the room key, PIN, or plaintext.
+</div>
 
-The Relay can retain encrypted traffic and metadata. The server that supplies the browser application can serve modified JavaScript. KeyBridge does not protect against compromised endpoints, browser extensions, screen capture, or clipboard residue. Encrypted envelope version 1 has no application-layer forward secrecy.
+> [!IMPORTANT]
+> **AI-assisted personal project**
+>
+> Most of this project was written with generative AI under the maintainer's direction. The maintainer built KeyBridge as a personal tool and reviews and tests its behavior. No independent security audit has occurred. Review the [security model](docs/security-model.md), source, and deployment configuration before you use it for sensitive data.
 
-Read the [security model](docs/security-model.md) before you deploy KeyBridge.
+## What KeyBridge does
 
-## Quick start
+KeyBridge transfers passwords, tokens, recovery codes, and configuration text between two browsers. A desktop **Sender** creates a room. A phone **Receiver** opens the pairing link and enters a PIN received through a separate channel.
 
-You need Docker and Docker Compose.
+The browsers encrypt pairing messages and secret values before transmission. The in-memory **Relay** forwards and temporarily retains ciphertext. It does not receive the room key, PIN, or plaintext.
 
-```sh
-git clone https://github.com/tjallo/keybridge.git
-cd keybridge
-SOURCE_COMMIT="$(git rev-parse HEAD)" docker compose build
-docker compose up
+| Property        | Behavior                                                  |
+| --------------- | --------------------------------------------------------- |
+| Topology        | One Sender, one Receiver, and one Relay process           |
+| Encryption      | HKDF-SHA-256 and AES-256-GCM through Web Crypto           |
+| Storage         | Relay memory and browser `sessionStorage` only            |
+| Item lifetime   | 30, 60, 120, or 300 seconds                               |
+| Room lifetime   | 10 minutes after creation, item storage, or extension     |
+| Reconnection    | Independent 60-second grace period for each browser       |
+| Browser support | Current Chrome, Firefox, and Safari on desktop and mobile |
+
+KeyBridge is not a password manager, file-transfer service, or long-term secret store. A Relay restart ends every room and removes its in-memory state.
+
+## How it works
+
+```mermaid
+flowchart LR
+    S["Sender browser"]
+    R["In-memory Relay"]
+    V["Receiver browser"]
+
+    S -- "Encrypted pairing data and items" --> R
+    R -- "Ciphertext and room state" --> V
+    V -- "Encrypted pairing data and control messages" --> R
+    R -- "Ciphertext and room state" --> S
+    S -. "Pairing link with room key" .-> V
+    S -. "PIN through a separate channel" .-> V
 ```
 
-Open `http://localhost:3000`. For a physical phone, serve KeyBridge through a trusted HTTPS origin and set `PUBLIC_ORIGIN` to that exact origin.
+The pairing link stores the room key in its URL fragment. Browsers do not send URL fragments to the Relay. The Sender must approve the Receiver before the Relay forwards secret items.
 
-## Development
+## Try it locally
 
-Set the container user to your local user. Then start the Relay and Vite development server:
-
-```sh
-export LOCAL_UID="$(id -u)"
-export LOCAL_GID="$(id -g)"
-docker compose -f compose.dev.yaml up --build
-```
-
-Open `http://localhost:5173` on the desktop. The loopback secure-context exception does not apply to a physical phone.
-
-Run checks in the development container:
-
-```sh
-docker compose -f compose.dev.yaml run --rm relay npm run format:check
-docker compose -f compose.dev.yaml run --rm relay npm run check
-docker compose -f compose.dev.yaml run --rm relay npm test
-docker compose -f compose.dev.yaml run --rm relay npm run test:integration
-docker compose -f compose.dev.yaml run --rm e2e npm run test:e2e
-docker compose -f compose.dev.yaml run --rm relay npm run build
-```
-
-## Connection recovery
-
-KeyBridge supports current Chrome, Firefox, and Safari on desktop and mobile. The browser reconnects after a temporary network loss. It retries during the Relay's 60-second grace period and restores encrypted pairing frames and active items from the Relay.
-
-Room actions pause while the browser reconnects. An unresolved idempotent command keeps its request identifier and resumes after the connection returns. The browser clears the session after grace expiry, a terminal Relay response, explicit leave, or room end.
-
-A Relay restart ends every room. Automatic reconnect does not recreate room data after a restart.
-
-## Container images
-
-Release tags publish the runtime image to GitHub Container Registry (GHCR):
+You need Docker. Run the published container on the loopback interface:
 
 ```sh
 docker pull ghcr.io/tjallo/keybridge:2.2.0
-docker pull ghcr.io/tjallo/keybridge:latest
+
+docker run --rm --name keybridge \
+  --read-only \
+  --tmpfs /tmp \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges:true \
+  -p 127.0.0.1:3000:3000 \
+  -e PUBLIC_ORIGIN=http://localhost:3000 \
+  ghcr.io/tjallo/keybridge:2.2.0
 ```
 
-If the GHCR package is private, authenticate with `docker login ghcr.io` before you pull it.
+Open `http://localhost:3000` on the same computer. Do not connect a physical phone to this HTTP endpoint. Mobile deployment requires a trusted HTTPS origin.
 
-## Releases
+## Deploy with Docker
 
-The GitHub release workflow runs when you push a tag in the `x.y.z` format. The tag must equal the `package.json` version. It publishes the version tag and `latest` to GHCR.
+Production requires one KeyBridge container behind a Transport Layer Security (TLS) reverse proxy. Do not run multiple replicas or add persistent room storage.
 
-```sh
-VERSION=0.2.0
-npm version "$VERSION" --no-git-tag-version
-git add package.json package-lock.json
-git commit -m "chore(release): prepare version $VERSION"
-git tag -a "$VERSION" -m "Release $VERSION"
-git push origin main "$VERSION"
+A minimal Caddy site block proxies HTTP and WebSocket traffic:
+
+```caddyfile
+keybridge.example.com {
+    reverse_proxy keybridge:3000
+}
 ```
 
-Create release checksums and a software bill of materials (SBOM) when you publish a release:
+The [self-hosting guide](docs/self-hosting.md) provides the matching Docker Compose configuration. The guide also covers network isolation and trusted proxy settings.
 
-```sh
-docker compose -f compose.dev.yaml run --rm -e SOURCE_COMMIT="$(git rev-parse HEAD)" relay npm run build
-docker compose -f compose.dev.yaml run --rm relay npm run release:checksums
-docker compose -f compose.dev.yaml run --rm relay npm run release:sbom
-```
+## Security boundaries
 
-## Self-hosting
+KeyBridge protects secret payloads while they pass through the Relay. It does not make the web server trustless. A compromised server can supply modified JavaScript that captures keys or plaintext.
 
-KeyBridge runs as one in-memory process. Do not use multiple replicas or attach persistent room storage.
+KeyBridge also cannot protect against compromised devices, browser extensions, screen capture, clipboard residue, memory dumps, or a malicious Relay that retains ciphertext. Encrypted envelope version 1 has no application-layer forward secrecy.
 
-Set `PUBLIC_ORIGIN` to the exact HTTPS origin that users open. Put the container behind a TLS reverse proxy that forwards WebSocket upgrades. Expose no application port to the public network.
+Read the [security model](docs/security-model.md) before deployment. It defines the supported claim, visible metadata, Relay powers, and known limits.
 
-```sh
-export PUBLIC_ORIGIN=https://keybridge.example
-export SOURCE_COMMIT="$(git rev-parse HEAD)"
-docker compose build
-docker compose up -d
-```
+## Documentation
 
-Set `TRUST_PROXY=1` and `TRUSTED_PROXY_ADDRESSES` only when the proxy is the container's sole network peer.
-
-Read the [self-hosting guide](docs/self-hosting.md) for deployment constraints. Read the current [transport protocol](docs/protocol.md) and archived [version 1 protocol](docs/protocol-v1.md).
+| Document                                  | Contents                                                            |
+| ----------------------------------------- | ------------------------------------------------------------------- |
+| [Self-hosting](docs/self-hosting.md)      | Docker, Caddy, HTTPS, proxy trust, updates, and operational limits  |
+| [Development](docs/development.md)        | Development containers, checks, browser tests, builds, and releases |
+| [Security model](docs/security-model.md)  | Security claim, metadata exposure, trust boundaries, and exclusions |
+| [Protocol version 2](docs/protocol.md)    | Current transport, room lifecycle, reconnection, limits, and errors |
+| [Protocol version 1](docs/protocol-v1.md) | Archived transport and the current encrypted-envelope key schedule  |
 
 ## License
 
-KeyBridge uses the [MIT License](LICENSE). You can use it in commercial work if you retain the copyright and license notice.
+KeyBridge uses the [MIT License](LICENSE). The license includes the applicable warranty disclaimer.
