@@ -8,18 +8,26 @@ interface PairedRoom {
   link: string;
 }
 
+async function navigate(page: Page, url: string): Promise<void> {
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+}
+
+async function reload(page: Page): Promise<void> {
+  await page.reload({ waitUntil: 'domcontentloaded' });
+}
+
 async function createPairedRoom(browser: Browser, baseURL: string): Promise<PairedRoom> {
   const senderContext = await browser.newContext();
   const receiverContext = await browser.newContext();
   const sender = await senderContext.newPage();
   const receiver = await receiverContext.newPage();
 
-  await sender.goto(baseURL);
+  await navigate(sender, baseURL);
   await sender.getByRole('button', { name: 'Create room' }).click();
   const link = await sender.getByLabel('Pairing link').inputValue();
   const pin = (await sender.locator('.pin strong').textContent()) ?? '';
 
-  await receiver.goto(link);
+  await navigate(receiver, link);
   await receiver.getByLabel('PIN').fill(pin);
   await receiver.getByRole('button', { name: 'Request pairing' }).click();
   await expect(sender.getByText('A Receiver supplied the correct PIN')).toBeVisible();
@@ -72,7 +80,7 @@ test('complete Sender to Receiver encrypted text flow', async ({ browser, baseUR
     })),
   ).toEqual({ start: 0, end: 'KNOWN-PLAINTEXT-SENTINEL'.length });
 
-  await room.receiver.reload();
+  await reload(room.receiver);
   await expect(value).toHaveValue('••••••••••••');
   await card.getByRole('button', { name: 'Reveal' }).click();
   await expect(value).toHaveValue('KNOWN-PLAINTEXT-SENTINEL');
@@ -117,10 +125,10 @@ test('wrong PIN rejection recovers and Sender reload preserves approval', async 
   const sender = await senderContext.newPage();
   const receiver = await receiverContext.newPage();
 
-  await sender.goto(baseURL!);
+  await navigate(sender, baseURL!);
   await sender.getByRole('button', { name: 'Create room' }).click();
   const link = await sender.getByLabel('Pairing link').inputValue();
-  await receiver.goto(link);
+  await navigate(receiver, link);
   await receiver.getByLabel('PIN').fill('2345-6789');
   await receiver.getByRole('button', { name: 'Request pairing' }).click();
   await expect(sender.getByText('Pairing authentication failed')).toBeVisible();
@@ -133,7 +141,7 @@ test('wrong PIN rejection recovers and Sender reload preserves approval', async 
   await receiver.getByRole('button', { name: 'Request pairing' }).click();
   await expect(sender.getByText('A Receiver supplied the correct PIN')).toBeVisible();
 
-  await sender.reload();
+  await reload(sender);
   await expect(sender.getByText('A Receiver supplied the correct PIN')).toBeVisible();
   await sender.getByRole('button', { name: 'Approve Receiver' }).click();
   await expect(receiver.getByText('Paired. Secret values stay hidden')).toBeVisible();
@@ -185,7 +193,7 @@ test('ending a paired room clears all session fields before a new room', async (
   expect(stored).not.toHaveProperty('senderNonce');
   expect(stored?.version).toBe(2);
 
-  await room.sender.reload();
+  await reload(room.sender);
   await expect(room.sender.getByLabel('Pairing link')).toHaveValue(secondLink);
 
   await endRoom(room.sender);
@@ -194,7 +202,7 @@ test('ending a paired room clears all session fields before a new room', async (
 });
 
 test('terminal resume failure clears session credentials', async ({ page, baseURL }) => {
-  await page.goto(baseURL!);
+  await navigate(page, baseURL!);
   await page.evaluate(() => {
     sessionStorage.setItem(
       'keybridge.room.v2',
@@ -210,7 +218,7 @@ test('terminal resume failure clears session credentials', async ({ page, baseUR
     );
   });
 
-  await page.reload();
+  await reload(page);
   await expect(page.getByRole('alert')).toContainText('room is no longer available');
   expect(await page.evaluate(() => sessionStorage.getItem('keybridge.room.v2'))).toBeNull();
 });
@@ -229,11 +237,11 @@ test('security headers, transparency, fragment removal, and second Receiver reje
   expect(response.headers()['permissions-policy']).toContain('magnetometer=()');
 
   const sender = await browser.newPage();
-  await sender.goto(baseURL!);
+  await navigate(sender, baseURL!);
   await sender.getByRole('button', { name: 'Security & transparency' }).click();
   await expect(sender.getByText('no forward secrecy', { exact: false })).toBeVisible();
 
-  await sender.goto(baseURL!);
+  await navigate(sender, baseURL!);
   await sender.getByRole('button', { name: 'Create room' }).click();
   const pairingQr = sender.getByLabel('Pairing QR code');
   await expect
@@ -248,18 +256,18 @@ test('security headers, transparency, fragment removal, and second Receiver reje
   ).toBe(true);
 
   const malformed = await browser.newPage();
-  await malformed.goto(`${baseURL}/#room=${'A'.repeat(22)}&key=%25`);
+  await navigate(malformed, `${baseURL}/#room=${'A'.repeat(22)}&key=%25`);
   await expect(malformed.getByRole('alert')).toContainText('Invalid pairing link');
 
   const link = await sender.getByLabel('Pairing link').inputValue();
   const pin = (await sender.locator('.pin strong').textContent()) ?? '';
   const first = await browser.newPage();
-  await first.goto(link);
+  await navigate(first, link);
   await first.getByLabel('PIN').fill(pin);
   await first.getByRole('button', { name: 'Request pairing' }).click();
 
   const second = await browser.newPage();
-  await second.goto(link);
+  await navigate(second, link);
   await expect(second.getByRole('alert')).toContainText('room is no longer available');
   await endRoom(sender);
 });
