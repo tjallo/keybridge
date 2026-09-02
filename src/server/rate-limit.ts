@@ -1,8 +1,13 @@
 import { isIP } from 'node:net';
 
+const RATE_WINDOW_MS = 600_000;
+
 export function addressGroup(address: string): string {
   const clean = address.replace(/^::ffff:/, '').split('%')[0] ?? '';
-  if (isIP(clean) === 4) return clean;
+  if (isIP(clean) === 4) {
+    return clean;
+  }
+
   if (isIP(clean) === 6) {
     const [leftText, rightText] = clean.toLowerCase().split('::');
     const left = leftText ? leftText.split(':') : [];
@@ -12,8 +17,10 @@ export function addressGroup(address: string): string {
     const prefix = parts.slice(0, 4).map((part) => Number.parseInt(part || '0', 16).toString(16));
     return `${prefix.join(':')}::/64`;
   }
+
   return 'unknown';
 }
+
 interface Entry {
   connections: number;
   rooms: number[];
@@ -22,47 +29,70 @@ interface Entry {
 
 export class RateLimiter {
   readonly #entries = new Map<string, Entry>();
+
   canConnect(group: string): boolean {
     return (this.#entries.get(group)?.connections ?? 0) < 20;
   }
+
   connect(group: string): void {
-    const e = this.#get(group);
-    e.connections++;
+    const entry = this.#get(group);
+    entry.connections += 1;
   }
+
   disconnect(group: string): void {
-    const e = this.#entries.get(group);
-    if (e) e.connections = Math.max(0, e.connections - 1);
+    const entry = this.#entries.get(group);
+    if (entry) {
+      entry.connections = Math.max(0, entry.connections - 1);
+    }
   }
+
   canCreate(group: string, live: number, now: number): 'ok' | 'rate_limited' {
-    const e = this.#get(group);
-    e.rooms = e.rooms.filter((time) => now - time < 600_000);
-    return live >= 5 || e.rooms.length >= 20 ? 'rate_limited' : 'ok';
+    const entry = this.#get(group);
+    entry.rooms = recent(entry.rooms, now);
+    return live >= 5 || entry.rooms.length >= 20 ? 'rate_limited' : 'ok';
   }
+
   created(group: string, now: number): void {
     this.#get(group).rooms.push(now);
   }
+
   canAttemptPairing(group: string, now: number): boolean {
     const entry = this.#get(group);
-    entry.pendingAttempts = entry.pendingAttempts.filter((time) => now - time < 600_000);
-    if (entry.pendingAttempts.length >= 20) return false;
+    entry.pendingAttempts = recent(entry.pendingAttempts, now);
+    if (entry.pendingAttempts.length >= 20) {
+      return false;
+    }
+
     entry.pendingAttempts.push(now);
     return true;
   }
+
   cleanup(now: number): void {
     for (const [key, entry] of this.#entries) {
-      entry.rooms = entry.rooms.filter((time) => now - time < 600_000);
-      entry.pendingAttempts = entry.pendingAttempts.filter((time) => now - time < 600_000);
-      if (!entry.connections && !entry.rooms.length && !entry.pendingAttempts.length)
+      entry.rooms = recent(entry.rooms, now);
+      entry.pendingAttempts = recent(entry.pendingAttempts, now);
+      if (
+        entry.connections === 0 &&
+        entry.rooms.length === 0 &&
+        entry.pendingAttempts.length === 0
+      ) {
         this.#entries.delete(key);
+      }
     }
   }
 
   #get(group: string): Entry {
-    let e = this.#entries.get(group);
-    if (!e) {
-      e = { connections: 0, rooms: [], pendingAttempts: [] };
-      this.#entries.set(group, e);
+    const existing = this.#entries.get(group);
+    if (existing) {
+      return existing;
     }
-    return e;
+
+    const entry = { connections: 0, rooms: [], pendingAttempts: [] };
+    this.#entries.set(group, entry);
+    return entry;
   }
+}
+
+function recent(times: number[], now: number): number[] {
+  return times.filter((time) => now - time < RATE_WINDOW_MS);
 }

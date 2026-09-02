@@ -1,4 +1,5 @@
 import {
+  ENVELOPE_VERSION,
   headerTuple,
   type Direction,
   type EncryptedEnvelope,
@@ -17,7 +18,9 @@ export function randomBytes(length: number): Uint8Array<ArrayBuffer> {
 export function base64url(bytes: Uint8Array): string {
   let binary = '';
 
-  for (const byte of bytes) binary += String.fromCharCode(byte);
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
 
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
 }
@@ -136,7 +139,7 @@ export async function encryptJson(
 ): Promise<EncryptedEnvelope> {
   const nonce = randomBytes(12);
   const envelope: EncryptedEnvelope = {
-    version: 1,
+    version: ENVELOPE_VERSION,
     roomId: fields.roomId,
     messageId: fields.messageId ?? randomId(),
     direction: fields.direction,
@@ -162,10 +165,7 @@ export async function encryptJson(
 }
 
 export function encodePlaintext(
-  envelope: Pick<
-    EncryptedEnvelope,
-    'roomId' | 'messageId' | 'direction' | 'kind' | 'expiresAt'
-  >,
+  envelope: Pick<EncryptedEnvelope, 'roomId' | 'messageId' | 'direction' | 'kind' | 'expiresAt'>,
   body: object,
 ): Uint8Array<ArrayBuffer> {
   return encoder.encode(
@@ -192,8 +192,11 @@ export async function decryptJson<T>(key: CryptoKey, envelope: EncryptedEnvelope
   );
   const body = JSON.parse(decoder.decode(plaintext)) as Record<string, unknown>;
 
-  for (const field of ['roomId', 'messageId', 'direction', 'kind', 'expiresAt'] as const)
-    if (body[field] !== envelope[field]) throw new Error('Authenticated header mismatch');
+  for (const field of ['roomId', 'messageId', 'direction', 'kind', 'expiresAt'] as const) {
+    if (body[field] !== envelope[field]) {
+      throw new Error('Authenticated header mismatch');
+    }
+  }
 
   return body as T;
 }
@@ -206,7 +209,9 @@ export class ReplayGuard {
   }
 
   commit(id: string): boolean {
-    if (this.#seen.has(id) || this.#seen.size >= 4096) return false;
+    if (this.#seen.has(id) || this.#seen.size >= 4096) {
+      return false;
+    }
 
     this.#seen.add(id);
 

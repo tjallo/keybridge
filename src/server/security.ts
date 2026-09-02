@@ -1,14 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-export const PUBLIC_ERRORS = [
-  'busy',
-  'expired',
-  'invalid_message',
-  'not_allowed',
-  'rate_limited',
-  'room_unavailable',
-  'unsupported_version',
-] as const;
-
+import { isIP } from 'node:net';
 export function securityHeaders(response: ServerResponse, path: string): void {
   response.setHeader(
     'Content-Security-Policy',
@@ -30,17 +21,34 @@ export function securityHeaders(response: ServerResponse, path: string): void {
   );
 }
 
-export function sourceAddress(request: IncomingMessage): string {
+export interface ProxyTrustConfig {
+  enabled: boolean;
+  trustedAddresses: ReadonlySet<string>;
+}
+
+const NO_PROXY_TRUST: ProxyTrustConfig = {
+  enabled: false,
+  trustedAddresses: new Set(),
+};
+
+export function sourceAddress(
+  request: IncomingMessage,
+  proxy: ProxyTrustConfig = NO_PROXY_TRUST,
+): string {
   const remote = request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown';
-  const trusted = new Set(
-    (process.env.TRUSTED_PROXY_ADDRESSES ?? '')
-      .split(',')
-      .map((address) => address.trim().replace(/^::ffff:/, ''))
-      .filter(Boolean),
-  );
-  if (process.env.TRUST_PROXY === '1' && trusted.has(remote)) {
-    const forwarded = request.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') return forwarded.split(',')[0]?.trim() ?? 'unknown';
+  if (!proxy.enabled || !proxy.trustedAddresses.has(remote)) {
+    return remote;
   }
-  return remote;
+
+  const forwarded = request.headers['x-forwarded-for'];
+  if (typeof forwarded !== 'string') {
+    return remote;
+  }
+
+  const source =
+    forwarded
+      .split(',')[0]
+      ?.trim()
+      .replace(/^::ffff:/, '') ?? '';
+  return isIP(source) === 0 ? remote : source;
 }

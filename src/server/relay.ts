@@ -1,78 +1,87 @@
 import type { IncomingMessage } from 'node:http';
-import { WebSocketServer, WebSocket } from 'ws';
+import type { Duplex } from 'node:stream';
+import { WebSocket, WebSocketServer } from 'ws';
+import { MAX_FRAME_BYTES } from '../shared/envelope.js';
 import {
-  MAX_FRAME_BYTES,
-  MAX_ENVELOPE_BYTES,
-  matchesEnvelope,
-  type Direction,
-  type EncryptedEnvelope,
-  type EnvelopeKind,
-} from '../shared/envelope.js';
-import { parseMessage } from './protocol.js';
-import { Room } from './rooms.js';
+  HEARTBEAT_INTERVAL_MS,
+  PUBLIC_ERROR_CODES,
+  TRANSPORT_VERSION,
+  decodeClientFrame,
+  type ClientFrame,
+  type PublicErrorCode,
+  type Role,
+} from '../shared/protocol.js';
+import { PeerRegistry, type Peer } from './peer-registry.js';
 import { RateLimiter, addressGroup } from './rate-limit.js';
-import { sourceAddress } from './security.js';
-interface Peer {
-  socket: WebSocket;
-  group: string;
-  room: Room | null;
-  role: 'sender' | 'receiver' | null;
-  alive: boolean;
-  commandTimes: number[];
-  intentional: boolean;
-}
-interface Peers {
-  sender?: Peer;
-  receiver?: Peer;
-}
+import { dispatchRoomCommand, type RelayEffect, type ServerPayload } from './relay-commands.js';
+import { Room } from './rooms.js';
+import { sourceAddress, type ProxyTrustConfig } from './security.js';
 
 export class Relay {
   readonly rooms = new Map<string, Room>();
   readonly limiter = new RateLimiter();
-  readonly #peers = new Map<string, Peers>();
-  readonly #wss: WebSocketServer;
+
+  readonly #clock: () => number;
+  readonly #origin: string;
+  readonly #proxy: ProxyTrustConfig;
+  readonly #peers = new PeerRegistry();
   readonly #timer: NodeJS.Timeout;
-  readonly origin: string;
-  constructor(server: import('node:http').Server, origin: string) {
-    this.origin = origin;
+  readonly #wss: WebSocketServer;
+
+  constructor(
+    server: import('node:http').Server,
+    origin: string,
+    clock: () => number = Date.now,
+    proxy: ProxyTrustConfig = { enabled: false, trustedAddresses: new Set() },
+  ) {
+    this.#origin = origin;
+    this.#clock = clock;
+    this.#proxy = proxy;
     this.#wss = new WebSocketServer({
       noServer: true,
       maxPayload: MAX_FRAME_BYTES,
       perMessageDeflate: false,
     });
+
     server.on('upgrade', (request, socket, head) => this.#upgrade(request, socket, head));
     this.#wss.on('connection', (socket, request) => this.#connection(socket, request));
-    this.#timer = setInterval(() => this.#maintenance(), 5_000);
+
+    this.#timer = setInterval(() => this.#maintenance(), HEARTBEAT_INTERVAL_MS);
     this.#timer.unref();
   }
 
-  #upgrade(request: IncomingMessage, socket: import('node:stream').Duplex, head: Buffer): void {
+  #upgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
     let url: URL;
+
     try {
       url = new URL(request.url ?? '/', 'http://internal');
     } catch {
       socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
       return;
     }
-    if (url.pathname !== '/ws' || request.headers.origin !== this.origin) {
+
+    if (url.pathname !== '/ws' || request.headers.origin !== this.#origin) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
-    const group = addressGroup(sourceAddress(request));
+
+    const group = addressGroup(sourceAddress(request, this.#proxy));
     if (!this.limiter.canConnect(group)) {
       socket.write('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
-    this.#wss.handleUpgrade(request, socket, head, (ws) =>
-      this.#wss.emit('connection', ws, request),
-    );
+
+    this.#wss.handleUpgrade(request, socket, head, (webSocket) => {
+      this.#wss.emit('connection', webSocket, request);
+    });
   }
 
   #connection(socket: WebSocket, request: IncomingMessage): void {
-    const group = addressGroup(sourceAddress(request));
+    const group = addressGroup(sourceAddress(request, this.#proxy));
     this.limiter.connect(group);
+
     const peer: Peer = {
       socket,
       group,
@@ -81,366 +90,345 @@ export class Relay {
       alive: true,
       commandTimes: [],
       intentional: false,
+      roleTimer: null,
     };
-    socket.on('pong', () => (peer.alive = true));
+
+    socket.on('pong', () => {
+      peer.alive = true;
+    });
     socket.on('message', (data, binary) => {
       if (binary) {
         this.#fail(peer, 'invalid_message');
         return;
       }
+
       this.#message(peer, data.toString());
     });
-    socket.on('error', () => {});
+    socket.on('error', () => {
+      // The close handler owns peer cleanup. WebSocket errors are intentionally not logged.
+    });
     socket.on('close', () => this.#closed(peer));
-    setTimeout(() => {
-      if (!peer.role) this.#fail(peer, 'invalid_message');
-    }, 10_000).unref();
+
+    peer.roleTimer = setTimeout(() => {
+      if (!peer.role && socket.readyState === WebSocket.OPEN) {
+        this.#fail(peer, 'invalid_message');
+      }
+    }, 10_000);
+    peer.roleTimer.unref();
   }
 
   #message(peer: Peer, text: string): void {
-    const message = parseMessage(text);
-    if (!message) {
-      try {
-        const raw = JSON.parse(text) as { version?: unknown };
-        this.#fail(peer, raw.version !== 1 ? 'unsupported_version' : 'invalid_message');
-      } catch {
-        this.#fail(peer, 'invalid_message');
-      }
+    const decoded = decodeClientFrame(text);
+    if (!decoded.ok) {
+      this.#fail(peer, decoded.code);
       return;
     }
-    if (message.type === 'pong') {
-      peer.alive = true;
-      return;
-    }
-    const now = Date.now();
+
+    const message = decoded.value;
+    const now = this.#clock();
     peer.commandTimes = peer.commandTimes.filter((time) => now - time < 60_000);
+
     if (peer.commandTimes.length >= 200) {
       this.#error(peer, new Error('rate_limited'), message.requestId);
       return;
     }
+
     peer.commandTimes.push(now);
+
     try {
       if (!peer.role) {
-        if (message.type === 'create') this.#create(peer, message.roomId, message.requestId);
-        else if (message.type === 'join') this.#join(peer, message.roomId, message.requestId);
-        else if (message.type === 'resume')
-          this.#resume(peer, message.roomId, message.role, message.credential, message.requestId);
-        else this.#fail(peer, 'not_allowed');
+        this.#attachCommand(peer, message, now);
         return;
       }
-      this.#active(peer, message);
+
+      if (message.type === 'create' || message.type === 'join' || message.type === 'resume') {
+        throw new Error('not_allowed');
+      }
+
+      if (!peer.room || !this.#peers.isCurrent(peer)) {
+        throw new Error('room_unavailable');
+      }
+
+      const effects = dispatchRoomCommand(peer.room, peer.role, message, now);
+      this.#applyEffects(peer, effects);
     } catch (error) {
       this.#error(peer, error, message.requestId);
     }
   }
 
-  #create(peer: Peer, roomId: string, requestId: string): void {
-    const now = Date.now();
-    if (this.rooms.size >= 500) throw new Error('busy');
-    const live = [...this.rooms.values()].filter(
-      (room) => room.addressGroup === peer.group && room.state !== 'ENDED',
+  #attachCommand(peer: Peer, message: ClientFrame, now: number): void {
+    switch (message.type) {
+      case 'create':
+        this.#create(peer, message.roomId, message.credential, message.requestId, now);
+        return;
+      case 'join':
+        this.#join(peer, message.roomId, message.credential, message.requestId, now);
+        return;
+      case 'resume':
+        this.#resume(
+          peer,
+          message.roomId,
+          message.role,
+          message.credential,
+          message.requestId,
+          now,
+        );
+        return;
+      default:
+        throw new Error('not_allowed');
+    }
+  }
+
+  #create(peer: Peer, roomId: string, credential: string, requestId: string, now: number): void {
+    const existing = this.rooms.get(roomId);
+    if (existing) {
+      existing.connect('sender', credential, now);
+      this.#attach(peer, existing, 'sender');
+      this.#ready(peer, requestId, 'resumed', now);
+      return;
+    }
+
+    if (this.rooms.size >= 500) {
+      throw new Error('busy');
+    }
+
+    const liveRooms = [...this.rooms.values()].filter(
+      (room) => room.addressGroup === peer.group && !room.ended,
     ).length;
-    if (this.limiter.canCreate(peer.group, live, now) !== 'ok') throw new Error('rate_limited');
-    if (this.rooms.has(roomId)) throw new Error('room_unavailable');
-    const room = new Room(roomId, peer.group, now);
+    if (this.limiter.canCreate(peer.group, liveRooms, now) !== 'ok') {
+      throw new Error('rate_limited');
+    }
+
+    const room = new Room(roomId, peer.group, credential, now);
     this.rooms.set(roomId, room);
     this.limiter.created(peer.group, now);
     this.#attach(peer, room, 'sender');
-    this.#send(peer, {
-      type: 'created',
-      requestId,
-      credential: room.senderCredential,
-      state: room.state,
-      deadline: room.deadline,
-    });
+    this.#ready(peer, requestId, 'created', now);
   }
 
-  #join(peer: Peer, roomId: string, requestId: string): void {
-    const now = Date.now();
-    if (!this.limiter.canAttemptPairing(peer.group, now)) throw new Error('rate_limited');
+  #join(peer: Peer, roomId: string, credential: string, requestId: string, now: number): void {
     const room = this.rooms.get(roomId);
-    if (!room) throw new Error('room_unavailable');
-    room.reserve(now);
+    if (!room) {
+      throw new Error('room_unavailable');
+    }
+
+    const isExistingReceiver = room.credentialFor('receiver') === credential;
+    if (!isExistingReceiver && !this.limiter.canAttemptPairing(peer.group, now)) {
+      throw new Error('rate_limited');
+    }
+
+    room.reserve(credential, now);
     this.#attach(peer, room, 'receiver');
-    this.#send(peer, { type: 'joined', requestId, state: room.state });
-    this.#notify(
-      room,
-      { type: 'room_state', state: room.state, deadline: room.deadline },
-      'receiver',
-    );
+    this.#ready(peer, requestId, isExistingReceiver ? 'resumed' : 'joined', now);
+    this.#notify(room, { type: 'room_state', status: room.status() }, 'receiver');
   }
 
   #resume(
     peer: Peer,
     roomId: string,
-    role: 'sender' | 'receiver',
+    role: Role,
     credential: string,
     requestId: string,
+    now: number,
   ): void {
     const room = this.rooms.get(roomId);
-    if (!room) throw new Error('room_unavailable');
-    const occupied = this.#peers.get(roomId)?.[role];
-    if (occupied && occupied.socket.readyState === WebSocket.OPEN)
+    if (!room) {
       throw new Error('room_unavailable');
-    room.resume(role, credential, Date.now());
+    }
+
+    room.connect(role, credential, now);
     this.#attach(peer, room, role);
+    this.#ready(peer, requestId, 'resumed', now);
+    this.#notify(room, { type: 'room_state', status: room.status() }, role);
+  }
+
+  #attach(peer: Peer, room: Room, role: Role): void {
+    if (peer.roleTimer) {
+      clearTimeout(peer.roleTimer);
+      peer.roleTimer = null;
+    }
+
+    const replaced = this.#peers.attach(peer, room, role);
+    if (!replaced || replaced === peer) {
+      return;
+    }
+
+    replaced.intentional = true;
+    if (replaced.roleTimer) {
+      clearTimeout(replaced.roleTimer);
+      replaced.roleTimer = null;
+    }
+    replaced.socket.close(4002, 'replaced');
+  }
+
+  #ready(peer: Peer, requestId: string, mode: 'created' | 'joined' | 'resumed', now: number): void {
+    if (!peer.room || !peer.role) {
+      throw new Error('room_unavailable');
+    }
+
     this.#send(peer, {
-      type: 'resumed',
+      type: 'ready',
       requestId,
-      state: room.state,
-      deadline: room.deadline,
-      items: room.snapshot(Date.now()),
+      mode,
+      snapshot: peer.room.snapshot(peer.role, now),
     });
-    this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline }, role);
   }
 
-  #active(peer: Peer, message: Exclude<ReturnType<typeof parseMessage>, null>): void {
-    const room = peer.room;
-    if (!room || message.type === 'pong') return;
-    const cached = room.requestResult(message.requestId);
-    if (cached !== undefined) {
-      this.#send(peer, cached);
-      return;
-    }
-    room.ensureCommandCapacity();
-    const now = Date.now();
-    if (message.type === 'pair' && peer.role === 'receiver') {
-      room.recordPairFrame();
-      const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'receiver-to-sender', 'pair-request', 'null');
-      this.#sendRole(room, 'sender', {
-        type: 'pair_request',
-        envelope,
-        requestId: message.requestId,
-      });
-      this.#complete(peer, room, message.requestId, { type: 'ack', requestId: message.requestId });
-      return;
-    }
-    if (message.type === 'approve' && peer.role === 'sender') {
-      const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'pair-response', 'null');
-      const credential = room.approve(now);
-      this.#sendRole(room, 'receiver', {
-        type: 'approved',
-        envelope,
-        credential,
-        requestId: message.requestId,
-      });
-      this.#complete(peer, room, message.requestId, {
-        type: 'ack',
-        requestId: message.requestId,
-        state: room.state,
-      });
-      return;
-    }
-    if (message.type === 'reject' && peer.role === 'sender') {
-      room.reject(now);
-      this.#sendRole(room, 'receiver', { type: 'rejected' });
-      this.#detachReceiver(room);
-      this.#complete(peer, room, message.requestId, {
-        type: 'ack',
-        requestId: message.requestId,
-        state: room.state,
-      });
-      return;
-    }
-    if (message.type === 'item' && peer.role === 'sender') {
-      const envelope = message.envelope as EncryptedEnvelope;
-      this.#validateEnvelope(envelope, room, 'sender-to-receiver', 'item', 'present');
-      if (
-        envelope.expiresAt === null ||
-        envelope.expiresAt <= now ||
-        envelope.expiresAt > now + 301_000
-      )
-        throw new Error('invalid_message');
-      const bytes = Buffer.byteLength(JSON.stringify(envelope));
-      room.store(envelope, bytes, now);
-      this.#sendRole(room, 'receiver', { type: 'item', envelope });
-      this.#complete(peer, room, message.requestId, {
-        type: 'ack',
-        requestId: message.requestId,
-        deadline: room.deadline,
-      });
-      return;
-    }
-    if (message.type === 'revoke' && peer.role !== null) {
-      const envelope = message.envelope as EncryptedEnvelope;
-      const direction = peer.role === 'sender' ? 'sender-to-receiver' : 'receiver-to-sender';
-      this.#validateEnvelope(envelope, room, direction, 'control', 'null');
-      room.revoke(message.itemId);
-      const otherRole = peer.role === 'sender' ? 'receiver' : 'sender';
-      this.#sendRole(room, otherRole, {
-        type: 'revoked',
-        itemId: message.itemId,
-        envelope,
-      });
-      this.#complete(peer, room, message.requestId, {
-        type: 'ack',
-        requestId: message.requestId,
-      });
-      return;
-    }
-    if (message.type === 'extend' && peer.role === 'sender') {
-      room.extend(now);
-      this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline });
-      this.#complete(peer, room, message.requestId, {
-        type: 'ack',
-        requestId: message.requestId,
-        deadline: room.deadline,
-      });
-      return;
-    }
-    if (message.type === 'end' && peer.role === 'sender') {
-      this.#end(room, 'ended');
-      return;
-    }
-    if (message.type === 'leave' && peer.role === 'receiver') {
-      peer.intentional = true;
-      room.disconnect('receiver', now);
-      this.#notify(
-        room,
-        { type: 'room_state', state: room.state, deadline: room.deadline },
-        'receiver',
-      );
-      peer.socket.close(1000);
-      return;
-    }
-    throw new Error('not_allowed');
-  }
+  #applyEffects(peer: Peer, effects: RelayEffect[]): void {
+    for (const effect of effects) {
+      const room = peer.room;
+      if (!room) {
+        return;
+      }
 
-  #validateEnvelope(
-    envelope: EncryptedEnvelope,
-    room: Room,
-    direction: Direction,
-    kind: EnvelopeKind,
-    expiresAt: 'null' | 'present',
-  ): void {
-    if (
-      Buffer.byteLength(JSON.stringify(envelope)) > MAX_ENVELOPE_BYTES ||
-      !matchesEnvelope(envelope, { roomId: room.id, direction, kind, expiresAt })
-    )
-      throw new Error('invalid_message');
-  }
-
-  #complete(peer: Peer, room: Room, requestId: string, response: object): void {
-    room.completeRequest(requestId, response);
-    this.#send(peer, response);
-  }
-
-  #attach(peer: Peer, room: Room, role: 'sender' | 'receiver'): void {
-    peer.room = room;
-    peer.role = role;
-    const peers = this.#peers.get(room.id) ?? {};
-    peers[role] = peer;
-    this.#peers.set(room.id, peers);
+      switch (effect.type) {
+        case 'reply':
+          this.#send(peer, effect.message);
+          break;
+        case 'send':
+          this.#sendRole(room, effect.role, effect.message);
+          break;
+        case 'notify':
+          this.#notify(room, effect.message, effect.except);
+          break;
+        case 'close_self':
+          peer.intentional = true;
+          this.#peers.removeIfCurrent(peer);
+          peer.socket.close(effect.code, effect.reason);
+          break;
+        case 'end':
+          this.#end(room, effect.reason);
+          return;
+      }
+    }
   }
 
   #closed(peer: Peer): void {
     this.limiter.disconnect(peer.group);
-    if (!peer.room || !peer.role || peer.intentional) return;
-    const peers = this.#peers.get(peer.room.id);
-    if (peers?.[peer.role] === peer) delete peers[peer.role];
-    peer.room.disconnect(peer.role, Date.now());
-    this.#notify(peer.room, {
-      type: 'room_state',
-      state: peer.room.state,
-      deadline: peer.room.deadline,
-    });
-  }
 
-  #detachReceiver(room: Room): void {
-    const receiver = this.#peers.get(room.id)?.receiver;
-    if (receiver) {
-      receiver.intentional = true;
-      receiver.socket.close(4000, 'rejected');
-      delete this.#peers.get(room.id)?.receiver;
+    if (peer.roleTimer) {
+      clearTimeout(peer.roleTimer);
+      peer.roleTimer = null;
+    }
+
+    if (peer.intentional || !peer.room || !peer.role) {
+      return;
+    }
+
+    if (!this.#peers.removeIfCurrent(peer)) {
+      return;
+    }
+
+    peer.room.disconnect(peer.role, this.#clock());
+    if (!peer.room.ended) {
+      this.#notify(peer.room, { type: 'room_state', status: peer.room.status() });
     }
   }
 
   #maintenance(): void {
-    const now = Date.now();
-    let retained = 0;
-    for (const room of this.rooms.values()) {
+    const now = this.#clock();
+    let retainedBytes = 0;
+
+    for (const room of [...this.rooms.values()]) {
       const priorState = room.state;
       room.tick(now);
-      retained += room.retainedBytes;
-      if (room.state === 'ENDED') this.#end(room, 'expired');
-      else if (room.state !== priorState) {
-        this.#notify(room, { type: 'room_state', state: room.state, deadline: room.deadline });
-        if (priorState === 'PAIR_PENDING' && room.state === 'WAITING') this.#detachReceiver(room);
+      retainedBytes += room.totalRetainedBytes;
+
+      if (room.ended) {
+        this.#end(room, 'expired');
+      } else if (room.state !== priorState) {
+        this.#notify(room, { type: 'room_state', status: room.status() });
       }
     }
-    if (retained > 128 * 1024 * 1024) {
-      for (const room of this.rooms.values()) this.#end(room, 'busy');
+
+    if (retainedBytes > 128 * 1024 * 1024) {
+      for (const room of [...this.rooms.values()]) {
+        this.#end(room, 'busy');
+      }
     }
-    for (const peer of this.#allPeers()) {
+
+    for (const peer of this.#peers.all()) {
       if (!peer.alive) {
         peer.socket.terminate();
         continue;
       }
+
       peer.alive = false;
       peer.socket.ping();
     }
+
     this.limiter.cleanup(now);
-  }
-  *#allPeers(): Iterable<Peer> {
-    for (const peers of this.#peers.values()) {
-      if (peers.sender) yield peers.sender;
-      if (peers.receiver) yield peers.receiver;
-    }
   }
 
   #end(room: Room, reason: string): void {
     room.end();
     this.#notify(room, { type: 'room_ended', reason });
-    for (const peer of Object.values(this.#peers.get(room.id) ?? {})) {
+
+    for (const peer of this.#peers.peersFor(room.id)) {
       peer.intentional = true;
       peer.socket.close(4001, reason);
     }
-    this.#peers.delete(room.id);
+
+    this.#peers.deleteRoom(room.id);
     this.rooms.delete(room.id);
   }
 
-  #notify(room: Room, message: unknown, except?: 'sender' | 'receiver'): void {
-    for (const role of ['sender', 'receiver'] as const)
-      if (role !== except) this.#sendRole(room, role, message);
+  #notify(room: Room, message: ServerPayload, except?: Role): void {
+    for (const role of ['sender', 'receiver'] as const) {
+      if (role !== except) {
+        this.#sendRole(room, role, message);
+      }
+    }
   }
 
-  #sendRole(room: Room, role: 'sender' | 'receiver', message: unknown): void {
-    const peer = this.#peers.get(room.id)?.[role];
-    if (peer) this.#send(peer, message);
+  #sendRole(room: Room, role: Role, message: ServerPayload): void {
+    const peer = this.#peers.current(room.id, role);
+    if (peer) {
+      this.#send(peer, message);
+    }
   }
 
-  #send(peer: Peer, message: unknown): void {
-    if (peer.socket.readyState === WebSocket.OPEN)
-      peer.socket.send(JSON.stringify({ version: 1, ...(message as object) }));
+  #send(peer: Peer, message: ServerPayload): void {
+    if (peer.socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    peer.socket.send(JSON.stringify({ version: TRANSPORT_VERSION, ...message }));
   }
 
   #error(peer: Peer, error: unknown, requestId?: string): void {
-    const code =
-      error instanceof Error &&
-      [
-        'busy',
-        'expired',
-        'invalid_message',
-        'not_allowed',
-        'rate_limited',
-        'room_unavailable',
-      ].includes(error.message)
-        ? error.message
-        : 'invalid_message';
-    this.#send(peer, { type: 'error', code, ...(requestId ? { requestId } : {}) });
-    if (code === 'invalid_message') peer.socket.close(1007, code);
+    const message = error instanceof Error ? error.message : '';
+    const code = PUBLIC_ERROR_CODES.includes(message as PublicErrorCode)
+      ? (message as PublicErrorCode)
+      : 'invalid_message';
+
+    this.#send(peer, {
+      type: 'error',
+      code,
+      ...(requestId ? { requestId } : {}),
+    });
+
+    if (code === 'invalid_message') {
+      peer.socket.close(1007, code);
+    }
   }
 
-  #fail(peer: Peer, code: string): void {
+  #fail(peer: Peer, code: 'invalid_message' | 'unsupported_version'): void {
     this.#send(peer, { type: 'error', code });
     peer.socket.close(1008, code);
   }
+
   shutdown(): void {
     clearInterval(this.#timer);
-    for (const room of [...this.rooms.values()]) this.#end(room, 'shutdown');
-    for (const socket of this.#wss.clients) socket.close(1001, 'shutdown');
+
+    for (const room of [...this.rooms.values()]) {
+      this.#end(room, 'shutdown');
+    }
+
+    for (const socket of this.#wss.clients) {
+      socket.close(1001, 'shutdown');
+    }
+
     this.#wss.close();
   }
 }

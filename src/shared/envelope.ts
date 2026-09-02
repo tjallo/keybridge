@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 1 as const;
+export const ENVELOPE_VERSION = 1 as const;
 export const MAX_FRAME_BYTES = 95 * 1024;
 export const MAX_ENVELOPE_BYTES = 72 * 1024;
 export const MAX_PLAINTEXT_BYTES = 64 * 1024;
@@ -9,7 +9,7 @@ export type EnvelopeKind = 'pair-request' | 'pair-response' | 'item' | 'control'
 /** Public authenticated fields. Tuple order is frozen for protocol version 1. */
 
 export interface EncryptedEnvelope {
-  version: 1;
+  version: typeof ENVELOPE_VERSION;
   roomId: string;
   messageId: string;
   direction: Direction;
@@ -32,10 +32,12 @@ export function headerTuple(envelope: EncryptedEnvelope): readonly unknown[] {
 }
 
 export function isEnvelope(value: unknown): value is EncryptedEnvelope {
-  if (!value || typeof value !== 'object') return false;
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
   const e = value as Record<string, unknown>;
   return (
-    e.version === PROTOCOL_VERSION &&
+    e.version === ENVELOPE_VERSION &&
     typeof e.roomId === 'string' &&
     /^[A-Za-z0-9_-]{22}$/.test(e.roomId) &&
     typeof e.messageId === 'string' &&

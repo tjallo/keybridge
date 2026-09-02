@@ -1,18 +1,42 @@
 services:
   relay:
-    build: { context: ., target: development }
-    environment: { PUBLIC_ORIGIN: http://localhost:5173, PORT: 3000 }
-    volumes: ['.:/app', 'node_modules:/app/node_modules']
+    user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+    build:
+      context: .
+      target: development
+    environment:
+      PUBLIC_ORIGIN: http://localhost:5173
+      PORT: 3000
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
     command: npm run dev:relay
+
   web:
-    build: { context: ., target: development }
-    volumes: ['.:/app', 'node_modules:/app/node_modules']
+    user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+    build:
+      context: .
+      target: development
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
     command: npm run dev:web
-    ports: ['127.0.0.1:5173:5173']
-    depends_on: [relay]
+    ports:
+      - '127.0.0.1:5173:5173'
+    depends_on:
+      - relay
+
   e2e:
-    build: { context: ., target: browser-test }
+    user: '${LOCAL_UID:-1000}:${LOCAL_GID:-1000}'
+    build:
+      context: .
+      target: browser-test
     network_mode: host
-    environment: { BASE_URL: http://127.0.0.1:3000 }
-    profiles: [test]
-volumes: { node_modules: {} }
+    environment:
+      BASE_URL: http://127.0.0.1:3000
+      HOME: /tmp
+    profiles:
+      - test
+
+volumes:
+  node_modules:
