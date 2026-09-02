@@ -9,6 +9,7 @@ permissions:
   contents: read
 
 env:
+  CI: 'true'
   REGISTRY: gitea.tailebf42a.ts.net
   IMAGE: gitea.tailebf42a.ts.net/tjallo/keybridge
 

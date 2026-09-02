@@ -1,10 +1,13 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const isCI = process.env.CI === 'true';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
   fullyParallel: true,
-  workers: 4,
+  workers: isCI ? 2 : 4,
+  retries: isCI ? 1 : 0,
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
     { name: 'firefox', use: { ...devices['Desktop Firefox'] } },

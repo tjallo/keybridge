@@ -10,6 +10,7 @@ permissions:
   packages: write
 
 env:
+  CI: 'true'
   REGISTRY: ghcr.io
   IMAGE: ghcr.io/tjallo/keybridge
 
