@@ -8,7 +8,7 @@ KeyBridge is for short-lived secrets such as passwords, tokens, recovery codes, 
 
 The browser encrypts each secret before it sends the secret to the Relay. The Relay does not receive the room key, PIN, or plaintext.
 
-The Relay can retain encrypted traffic and metadata. The server that supplies the browser application can serve modified JavaScript. KeyBridge does not protect against compromised endpoints, browser extensions, screen capture, or clipboard residue. Version 1 has no application-layer forward secrecy.
+The Relay can retain encrypted traffic and metadata. The server that supplies the browser application can serve modified JavaScript. KeyBridge does not protect against compromised endpoints, browser extensions, screen capture, or clipboard residue. Encrypted envelope version 1 has no application-layer forward secrecy.
 
 Read the [security model](docs/security-model.md) before you deploy KeyBridge.
 
@@ -27,9 +27,11 @@ Open `http://localhost:3000`. For a physical phone, serve KeyBridge through a tr
 
 ## Development
 
-Start the Relay and Vite development server:
+Set the container user to your local user. Then start the Relay and Vite development server:
 
 ```sh
+export LOCAL_UID="$(id -u)"
+export LOCAL_GID="$(id -g)"
 docker compose -f compose.dev.yaml up --build
 ```
 
@@ -45,6 +47,14 @@ docker compose -f compose.dev.yaml run --rm relay npm run test:integration
 docker compose -f compose.dev.yaml run --rm e2e npm run test:e2e
 docker compose -f compose.dev.yaml run --rm relay npm run build
 ```
+
+## Connection recovery
+
+KeyBridge supports current Chrome, Firefox, and Safari on desktop and mobile. The browser reconnects after a temporary network loss. It retries during the Relay's 60-second grace period and restores encrypted pairing frames and active items from the Relay.
+
+Room actions pause while the browser reconnects. An unresolved idempotent command keeps its request identifier and resumes after the connection returns. The browser clears the session after grace expiry, a terminal Relay response, explicit leave, or room end.
+
+A Relay restart ends every room. Automatic reconnect does not recreate room data after a restart.
 
 ## Container images
 
@@ -93,7 +103,7 @@ docker compose up -d
 
 Set `TRUST_PROXY=1` and `TRUSTED_PROXY_ADDRESSES` only when the proxy is the container's sole network peer.
 
-Read the [self-hosting guide](docs/self-hosting.md) for deployment constraints. Read the [protocol](docs/protocol.md) for the frozen version 1 protocol.
+Read the [self-hosting guide](docs/self-hosting.md) for deployment constraints. Read the current [transport protocol](docs/protocol.md) and archived [version 1 protocol](docs/protocol-v1.md).
 
 ## License
 

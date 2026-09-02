@@ -1,50 +1,142 @@
-# KeyBridge protocol v1
+# KeyBridge transport protocol version 2
 
-Protocol version **1 is frozen**. Browser and Relay frames are bounded JSON text; binary frames are unsupported. A first frame is `create`, `join`, or `resume`. Every mutation includes a random `requestId`; bounded Room-level completed outcomes survive reconnect grace, and repeated identifiers receive the original acknowledgement without repeating the mutation.
+Transport protocol version 2 defines the JSON frames between each browser and the Relay. It uses encrypted envelope version 1 without changes. See [protocol version 1](protocol-v1.md) for the archived transport protocol and the envelope key schedule.
 
-## Pairing capability
+The Relay accepts bounded JSON text frames on `/ws`. The Relay rejects binary frames. Each frame contains `"version": 2` and a `type` field.
 
-A pairing link is `https://keybridge.example/#room=<22-character base64url room identifier>&key=<43-character base64url room key>`. The host is the configured public origin. The fragment is removed immediately after import. The PIN is eight characters from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`; presentation may insert one hyphen. HKDF-SHA-256 derives the AES-256-GCM pairing key with:
+## Identifiers and credentials
 
-- input key material: the 32-byte room key;
-- salt UTF-8: `<roomId>:<normalizedPIN>`;
-- info UTF-8: `keybridge-v1/pairing`.
+A room identifier is a 22-character base64url value. A request identifier is a 16-to-64-character base64url value.
 
-The encrypted Receiver request contains a random `receiverNonce`. The encrypted Sender approval contains that nonce and a random `senderNonce`. A session root is HKDF over the pairing-key bytes, salt `<roomId>/<receiverNonce>/<senderNonce>`, and info `keybridge-v1/session-root`. Three keys use room ID salt and these info strings:
+Each browser generates a 32-byte random role credential before its first connection. Base64url encoding produces 43 characters. The browser stores the credential in `sessionStorage`. The pairing link and encrypted payloads do not contain the credential.
 
-- `keybridge-v1/sender-to-receiver/item`
-- `keybridge-v1/sender-to-receiver/control`
-- `keybridge-v1/receiver-to-sender/control`
+The Relay treats the credential as a capability for one role. A connection with the correct credential can replace an older connection for that role. The Relay closes the older connection with code `4002` and reason `replaced`.
 
-## Envelope
+## First command
+
+The first command on a socket is `create`, `join`, or `resume`.
+
+A Sender creates a room:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "type": "create",
   "roomId": "base64url",
-  "messageId": "base64url",
-  "direction": "sender-to-receiver",
-  "kind": "item",
-  "expiresAt": 1700000000000,
-  "nonce": "16-char-base64url",
-  "ciphertext": "base64url"
+  "credential": "43-character-base64url",
+  "requestId": "base64url"
 }
 ```
 
-The AES-GCM additional authenticated data is UTF-8 JSON for this fixed tuple, with no whitespace:
+A Receiver reserves the room:
 
-```text
-[version, roomId, messageId, direction, kind, expiresAt, nonce]
+```json
+{
+  "version": 2,
+  "type": "join",
+  "roomId": "base64url",
+  "credential": "43-character-base64url",
+  "requestId": "base64url"
+}
 ```
 
-Directions are `sender-to-receiver` and `receiver-to-sender`. Kinds are `pair-request`, `pair-response`, `item`, and `control`. Pairing envelopes have a null expiration. Bodies duplicate `roomId`, `messageId`, `direction`, `kind`, and `expiresAt`; a mismatch is rejected. Nonces are 96 random bits. Identifiers are replay-checked.
+A connected role resumes a room:
+
+```json
+{
+  "version": 2,
+  "type": "resume",
+  "roomId": "base64url",
+  "role": "sender",
+  "credential": "43-character-base64url",
+  "requestId": "base64url"
+}
+```
+
+`create` and `join` are idempotent for the same room, role, and credential. This rule recovers a session when the Relay accepted the first command but the browser did not receive the response.
+
+The Relay responds with `ready`:
+
+```json
+{
+  "version": 2,
+  "type": "ready",
+  "requestId": "base64url",
+  "mode": "resumed",
+  "snapshot": {
+    "state": "PAIRED",
+    "deadline": 1700000000000,
+    "senderConnected": true,
+    "receiverConnected": true,
+    "items": [],
+    "pairing": null
+  }
+}
+```
+
+`mode` is `created`, `joined`, or `resumed`. The `pairing` field contains the encrypted pairing request needed by the Sender or the encrypted approval needed by the Receiver. The field is null when the role needs no pairing frame.
+
+## Room lifecycle
+
+The public room states are:
+
+- `WAITING`: The room can reserve one Receiver.
+- `PAIR_PENDING`: The Relay received one encrypted pairing request from the reserved Receiver.
+- `PAIRED`: The Sender approved the Receiver.
+- `SENDER_GRACE`: The Sender connection is absent during its reconnect grace period.
+- `RECEIVER_GRACE`: The reserved or paired Receiver is absent during its reconnect grace period.
+
+Each role has an independent 60-second reconnect grace period. Sender grace expiry ends the room. Receiver grace expiry removes retained items and returns the room to `WAITING`. A pending pairing request also expires after 60 seconds. A room expires 10 minutes after creation or its last accepted item or extension.
+
+The Relay sends a `room_state` event after a visible lifecycle change:
+
+```json
+{
+  "version": 2,
+  "type": "room_state",
+  "status": {
+    "state": "RECEIVER_GRACE",
+    "deadline": 1700000000000,
+    "senderConnected": true,
+    "receiverConnected": false
+  }
+}
+```
 
 ## Commands and events
 
-Commands: `create`, `join`, `resume`, `pair`, `approve`, `reject`, `extend`, `end`, `leave`, `item`, `revoke`, and `pong`. Events: `created`, `joined`, `resumed`, `pair_request`, `approved`, `rejected`, `item`, `revoked`, `room_state`, `room_ended`, `ack`, and `error`.
+Commands after attachment are `pair`, `approve`, `reject`, `item`, `revoke`, `extend`, `end`, and `leave`. Each command contains a random `requestId`.
 
-A `revoke` command carries the public item identifier and a `control` envelope whose authenticated body duplicates that identifier. Sender revocations use the sender-to-receiver control key and direction; Receiver revocations use the receiver-to-sender control key and direction. The peer authenticates this envelope before removing its local item.
+The Relay sends these events:
 
-Stable public errors are `busy`, `expired`, `invalid_message`, `not_allowed`, `rate_limited`, `room_unavailable`, and `unsupported_version`. An unavailable random room and a busy receiver slot both use `room_unavailable`.
+- `pair_request` sends an encrypted Receiver pairing request to the Sender.
+- `approved` sends an encrypted Sender approval to the Receiver.
+- `rejected` tells the Receiver that the Sender rejected the request.
+- `item` sends an encrypted item to the Receiver.
+- `revoked` sends an authenticated encrypted revocation to the other role.
+- `ack` confirms a completed command.
+- `room_state` reports a lifecycle change.
+- `room_ended` reports a terminal room reason.
+- `error` reports a public protocol error.
 
-Frames are below 96 KiB. Every encrypted envelope is at most 72 KiB. Item TTL is 30, 60, 120, or 300 seconds. Relay credentials are random role-specific capabilities and are never part of encrypted payload key derivation.
+The Relay caches completed command responses by role and `requestId`. A repeated identifier from the same role receives the original response without repeating the effect. The other role can use the same identifier without a collision.
+
+The Relay retains encrypted items until item expiry, revocation, Receiver grace expiry, or room end. It also retains the encrypted pairing frames needed for a resume snapshot. The Relay does not receive the keys or plaintext.
+
+## Reconnect behavior
+
+A browser reconnects with bounded backoff after an unintentional socket close. It reuses the role credential and sends `resume`. The browser replays unresolved idempotent commands with their original request identifiers after `ready`.
+
+A browser stops reconnecting after the grace deadline, a terminal error, explicit leave, explicit room end, or session replacement. Browser timer throttling can delay an attempt. Online and visibility events request an immediate attempt when the browser resumes execution.
+
+## Encrypted envelope version 1
+
+Transport version 2 uses the frozen version 1 encrypted envelope. The envelope still contains `"version": 1`. The HKDF-SHA-256 key schedule, AES-256-GCM additional authenticated data, directions, kinds, and test vectors do not change.
+
+See [protocol version 1](protocol-v1.md) for the pairing link, PIN alphabet, key derivation inputs, and envelope tuple.
+
+## Limits and errors
+
+Frames are below 96 KiB. Encrypted envelopes are at most 72 KiB. Item plaintext is at most 64 KiB. A room retains at most 10 items and 256 KiB of encrypted item data. Item time-to-live values are 30, 60, 120, or 300 seconds.
+
+Public error codes are `busy`, `expired`, `invalid_message`, `not_allowed`, `rate_limited`, `room_unavailable`, and `unsupported_version`. An unavailable random room and an occupied Receiver slot both use `room_unavailable`.

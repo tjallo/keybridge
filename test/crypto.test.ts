@@ -59,8 +59,8 @@ test('fixed AES-256-GCM vector', async () => {
 });
 
 test('both browsers derive matching pairing and directional session keys', async () => {
-  const roomKey = new Uint8Array(32).fill(7),
-    roomId = 'AAAAAAAAAAAAAAAAAAAAAA';
+  const roomKey = new Uint8Array(32).fill(7);
+  const roomId = 'AAAAAAAAAAAAAAAAAAAAAA';
   const sender = await derivePairingKey(roomKey, roomId, '2345-6789');
   const receiver = await derivePairingKey(roomKey, roomId, '23456789');
   const wrong = await derivePairingKey(roomKey, roomId, '2345678A');
@@ -72,8 +72,8 @@ test('both browsers derive matching pairing and directional session keys', async
     Buffer.from(await crypto.subtle.exportKey('raw', sender)),
     Buffer.from(await crypto.subtle.exportKey('raw', wrong)),
   );
-  const a = await deriveSessionKeys(sender, roomId, 'receiver', 'sender'),
-    b = await deriveSessionKeys(receiver, roomId, 'receiver', 'sender');
+  const a = await deriveSessionKeys(sender, roomId, 'receiver', 'sender');
+  const b = await deriveSessionKeys(receiver, roomId, 'receiver', 'sender');
   const envelope = await encryptJson(
     a.item,
     { roomId, direction: 'sender-to-receiver', kind: 'item', expiresAt: Date.now() + 1000 },

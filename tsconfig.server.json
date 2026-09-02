@@ -10,5 +10,11 @@
     "outDir": "build",
     "types": ["node"]
   },
-  "include": ["src/server/**/*.ts", "src/shared/**/*.ts"]
+  "include": [
+    "src/server/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/ui/session/model.ts",
+    "src/ui/session/storage.ts",
+    "src/ui/session/transport.ts"
+  ]
 }

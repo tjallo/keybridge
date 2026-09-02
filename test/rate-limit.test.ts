@@ -12,15 +12,24 @@ test('normalizes IPv4 mapped and groups IPv6 by /64', () => {
 
 test('connection and room creation limits', () => {
   const limiter = new RateLimiter();
-  for (let i = 0; i < 20; i++) limiter.connect('a');
+  for (let index = 0; index < 20; index += 1) {
+    limiter.connect('a');
+  }
   assert.equal(limiter.canConnect('a'), false);
-  for (let i = 0; i < 20; i++) limiter.disconnect('a');
-  for (let i = 0; i < 20; i++) limiter.created('a', 1000 + i);
+
+  for (let index = 0; index < 20; index += 1) {
+    limiter.disconnect('a');
+  }
+  for (let index = 0; index < 20; index += 1) {
+    limiter.created('a', 1000 + index);
+  }
   assert.equal(limiter.canCreate('a', 0, 2000), 'rate_limited');
   limiter.cleanup(700_000);
   assert.equal(limiter.canCreate('a', 0, 700_000), 'ok');
   assert.equal(limiter.canCreate('a', 5, 700_000), 'rate_limited');
-  for (let index = 0; index < 20; index++) assert.equal(limiter.canAttemptPairing('b', 1000), true);
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal(limiter.canAttemptPairing('b', 1000), true);
+  }
   assert.equal(limiter.canAttemptPairing('b', 1000), false);
   assert.equal(limiter.canAttemptPairing('b', 700_000), true);
 });

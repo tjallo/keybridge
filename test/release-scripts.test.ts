@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 
 const execute = promisify(execFile);
 const checksumScript = fileURLToPath(new URL('../scripts/checksums.mjs', import.meta.url));
+const releaseInfoScript = fileURLToPath(new URL('../scripts/release-info.mjs', import.meta.url));
 
 test('release checksums include nested assets and are repeatable', async (context) => {
   const directory = await mkdtemp(join(tmpdir(), 'keybridge-release-'));
@@ -35,4 +36,27 @@ test('release checksums include nested assets and are repeatable', async (contex
   assert.match(first, /  assets\/app\.js$/m);
   assert.match(first, /  index\.html$/m);
   assert.doesNotMatch(first, /  SHA256SUMS$/m);
+});
+
+test('release metadata reports transport and envelope versions', async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), 'keybridge-release-info-'));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  await mkdir(join(directory, 'dist', 'assets'), { recursive: true });
+  await writeFile(join(directory, 'dist', 'assets', 'app.js'), 'console.log("app");');
+
+  await execute(process.execPath, [releaseInfoScript], {
+    cwd: directory,
+    env: {
+      ...process.env,
+      npm_package_version: '1.0.0',
+      SOURCE_COMMIT: 'abc123',
+    },
+  });
+
+  const metadata = JSON.parse(
+    await readFile(join(directory, 'dist', 'release.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  assert.equal(metadata.transportVersion, 2);
+  assert.equal(metadata.envelopeVersion, 1);
+  assert.equal(metadata.sourceCommit, 'abc123');
 });

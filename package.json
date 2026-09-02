@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=26"
+    "node": ">=26.0.0 <27"
   },
   "scripts": {
     "dev:web": "vite --host 0.0.0.0 --port 5173",
@@ -16,7 +16,8 @@
     "format": "prettier --write .",
     "test": "npm run build:server && node --experimental-strip-types --test test/*.test.ts",
     "test:integration": "npm run build:server && node --experimental-strip-types --test test/integration/*.test.ts",
-    "test:e2e": "playwright test",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:all": "npm test && npm run test:integration && npm run test:e2e",
     "release:checksums": "node scripts/checksums.mjs",
     "release:sbom": "npm sbom --omit=dev --sbom-format=cyclonedx > dist/sbom.cdx.json",
     "build:server": "tsc -p tsconfig.server.json"
@@ -26,10 +27,9 @@
     "ws": "^8.18.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0",
+    "@playwright/test": "1.62.1",
     "@sveltejs/vite-plugin-svelte": "^6.2.0",
     "@types/node": "^24.0.0",
-    "@types/qrcode-generator": "^1.0.6",
     "@types/ws": "^8.18.0",
     "prettier": "^3.5.0",
     "prettier-plugin-svelte": "^3.4.0",
