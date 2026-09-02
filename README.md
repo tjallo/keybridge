@@ -61,7 +61,7 @@ A Relay restart ends every room. Automatic reconnect does not recreate room data
 Release tags publish the runtime image to GitHub Container Registry (GHCR):
 
 ```sh
-docker pull ghcr.io/tjallo/keybridge:1.0.0
+docker pull ghcr.io/tjallo/keybridge:2.0.0
 docker pull ghcr.io/tjallo/keybridge:latest
 ```
 
