@@ -27,6 +27,12 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Show runner resources
+        run: |
+          nproc
+          free -h
+          df -h /dev/shm
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
