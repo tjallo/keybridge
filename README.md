@@ -59,7 +59,7 @@ The pairing link stores the room key in its URL fragment. Browsers do not send U
 You need Docker. Run the published container on the loopback interface:
 
 ```sh
-docker pull ghcr.io/tjallo/keybridge:2.2.0
+docker pull ghcr.io/tjallo/keybridge:3.0.0
 
 docker run --rm --name keybridge \
   --read-only \
@@ -68,7 +68,7 @@ docker run --rm --name keybridge \
   --security-opt=no-new-privileges:true \
   -p 127.0.0.1:3000:3000 \
   -e PUBLIC_ORIGIN=http://localhost:3000 \
-  ghcr.io/tjallo/keybridge:2.2.0
+  ghcr.io/tjallo/keybridge:3.0.0
 ```
 
 Open `http://localhost:3000` on the same computer. Do not connect a physical phone to this HTTP endpoint. Mobile deployment requires a trusted HTTPS origin.
