@@ -17,16 +17,28 @@ import {
   base64url,
   decryptJson,
   derivePairingKey,
-  deriveSessionKeys,
+  deriveSessionChains,
   encodePlaintext,
   encryptJson,
+  exportEcdhPrivateKey,
+  exportEcdhPublicKey,
   fromBase64url,
+  generateEcdhKeyPair,
   generatePin,
+  importEcdhPrivateKey,
+  isEncodedEcdhPublicKey,
   normalizePin,
   randomBytes,
   randomId,
-  type SessionKeys,
+  type PairingTranscript,
 } from '../crypto';
+import {
+  advanceSendRatchet,
+  createSessionRatchets,
+  prepareReceiveRatchet,
+  pruneSessionRatchets,
+  type SessionRatchets,
+} from '../ratchet';
 import { initialSessionSnapshot, reduceConnection, type Item, type SessionSnapshot } from './model';
 import {
   clearStoredSession,
@@ -37,6 +49,18 @@ import {
 import { RelayTransport, type TerminalReason, type TransportStatus } from './transport';
 
 type Listener = (snapshot: SessionSnapshot) => void;
+type CryptoPhase = 'waiting' | 'pairing' | 'paired';
+
+interface PairRequestBody {
+  receiverNonce: string;
+  receiverPublicKey: string;
+}
+
+interface ApprovalBody extends PairRequestBody {
+  approved: boolean;
+  senderNonce: string;
+  senderPublicKey: string;
+}
 
 export class SessionController {
   #snapshot = initialSessionSnapshot();
@@ -46,10 +70,15 @@ export class SessionController {
   #credential = '';
   #attached = false;
   #readyReceived = false;
+  #phase: CryptoPhase = 'waiting';
   #pairingKey: CryptoKey | null = null;
-  #keys: SessionKeys | null = null;
   #receiverNonce = '';
-  #senderNonce = '';
+  #receiverPublicKey = '';
+  #receiverPrivateKey = '';
+  #ratchets: SessionRatchets | null = null;
+  #pending = new Map<string, ClientFrame>();
+  #itemBusy = false;
+  #controlBusy = false;
   #itemReplay = new ReplayGuard();
   #pairingReplay = new ReplayGuard();
   #controlReplay = new ReplayGuard();
@@ -57,9 +86,15 @@ export class SessionController {
 
   constructor() {
     this.#expiryTimer = setInterval(() => {
-      const items = this.#snapshot.items.filter((item) => item.expiresAt > Date.now());
-      if (items.length !== this.#snapshot.items.length) {
-        this.#patch({ items });
+      const now = Date.now();
+      const items = this.#snapshot.items.filter((item) => item.expiresAt > now);
+      if (items.length !== this.#snapshot.items.length) this.#patch({ items });
+      if (this.#ratchets) {
+        const ratchets = pruneSessionRatchets(this.#ratchets, now);
+        if (ratchets !== this.#ratchets) {
+          this.#ratchets = ratchets;
+          if (!this.#save()) this.#endLocalSession('Browser session storage is unavailable.');
+        }
       }
     }, 1_000);
   }
@@ -75,15 +110,15 @@ export class SessionController {
   }
 
   async start(): Promise<void> {
-    if (await this.#importFragment()) {
+    if (await this.#importFragment()) return;
+    let stored: StoredSession | null;
+    try {
+      stored = loadStoredSession(sessionStorage);
+    } catch {
+      this.#patch({ error: 'Browser session storage is unavailable.' });
       return;
     }
-
-    const stored = loadStoredSession(sessionStorage);
-    if (!stored) {
-      return;
-    }
-
+    if (!stored) return;
     try {
       await this.#restore(stored);
     } catch {
@@ -99,15 +134,11 @@ export class SessionController {
   }
 
   showSecurity(): void {
-    if (this.#snapshot.view === 'start') {
-      this.#patch({ view: 'security' });
-    }
+    if (this.#snapshot.view === 'start') this.#patch({ view: 'security' });
   }
 
   showStart(): void {
-    if (this.#snapshot.view === 'security') {
-      this.#patch({ view: 'start' });
-    }
+    if (this.#snapshot.view === 'security') this.#patch({ view: 'start' });
   }
 
   dismissError(): void {
@@ -116,14 +147,15 @@ export class SessionController {
 
   async createRoom(): Promise<void> {
     this.#resetPrivateState();
-    clearStoredSession(sessionStorage);
-
+    if (!this.#clearStorage()) {
+      this.#patch({ error: 'Browser session storage is unavailable.' });
+      return;
+    }
     const roomId = base64url(randomBytes(16));
     this.#roomKey = base64url(randomBytes(32));
     this.#credential = base64url(randomBytes(32));
     const pin = generatePin();
     this.#pairingKey = await derivePairingKey(fromBase64url(this.#roomKey), roomId, pin);
-
     this.#snapshot = {
       ...initialSessionSnapshot(),
       view: 'sender',
@@ -134,11 +166,12 @@ export class SessionController {
       pin,
     };
     this.#emit();
-    this.#save();
+    if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
     this.#connect('create');
   }
 
   async submitPin(value: string): Promise<void> {
+    if (this.#snapshot.role !== 'receiver' || this.#phase === 'paired') return;
     try {
       const pin = normalizePin(value);
       this.#pairingKey = await derivePairingKey(
@@ -146,9 +179,11 @@ export class SessionController {
         this.#snapshot.roomId,
         pin,
       );
+      const keyPair = await generateEcdhKeyPair(true);
       this.#receiverNonce = randomId();
-      this.#senderNonce = '';
-      this.#keys = null;
+      this.#receiverPublicKey = await exportEcdhPublicKey(keyPair.publicKey);
+      this.#receiverPrivateKey = await exportEcdhPrivateKey(keyPair.privateKey);
+      this.#phase = 'pairing';
 
       const envelope = await encryptJson(
         this.#pairingKey,
@@ -157,73 +192,101 @@ export class SessionController {
           direction: 'receiver-to-sender',
           kind: 'pair-request',
           expiresAt: null,
+          generation: null,
         },
-        { receiverNonce: this.#receiverNonce },
+        { receiverNonce: this.#receiverNonce, receiverPublicKey: this.#receiverPublicKey },
       );
-
+      const frame: ClientFrame = {
+        version: TRANSPORT_VERSION,
+        type: 'pair',
+        envelope,
+        requestId: randomId(),
+      };
+      this.#pending.set(frame.requestId, frame);
       this.#patch({ pin, receiverView: 'PENDING', error: '' });
-      this.#save();
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
 
-      if (
-        !(await this.#request({
-          version: TRANSPORT_VERSION,
-          type: 'pair',
-          envelope,
-          requestId: randomId(),
-        }))
-      ) {
+      const accepted = await this.#request(frame);
+      this.#pending.delete(frame.requestId);
+      if (!accepted) {
+        this.#clearPairingAttempt();
+        this.#phase = 'waiting';
         this.#patch({
+          pin: '',
           receiverView: 'PIN',
           error: 'The Relay did not accept the pairing request. Try again.',
         });
       }
+      this.#save();
     } catch {
-      this.#patch({ error: 'The PIN format is invalid.' });
+      this.#patch({ error: 'The PIN format or pairing key is invalid.' });
     }
   }
 
   async approve(): Promise<void> {
-    if (!this.#pairingKey || !this.#receiverNonce) {
+    if (this.#snapshot.role !== 'sender') return;
+    const existing = [...this.#pending.values()].find((frame) => frame.type === 'approve');
+    if (existing) {
+      const accepted = await this.#request(existing);
+      if (accepted) this.#finishPendingApproval(existing.requestId);
+      else
+        this.#patch({
+          canApprove: true,
+          error: 'The Relay did not accept the approval. Try again.',
+        });
       return;
     }
+    if (!this.#pairingKey || !this.#receiverNonce || !this.#receiverPublicKey) return;
 
-    this.#senderNonce = randomId();
-    this.#keys = await deriveSessionKeys(
-      this.#pairingKey,
-      this.#snapshot.roomId,
-      this.#receiverNonce,
-      this.#senderNonce,
-    );
-    const envelope = await encryptJson(
-      this.#pairingKey,
-      {
+    try {
+      const senderNonce = randomId();
+      const senderKeys = await generateEcdhKeyPair(false);
+      const senderPublicKey = await exportEcdhPublicKey(senderKeys.publicKey);
+      const transcript: PairingTranscript = {
         roomId: this.#snapshot.roomId,
-        direction: 'sender-to-receiver',
-        kind: 'pair-response',
-        expiresAt: null,
-      },
-      {
-        approved: true,
         receiverNonce: this.#receiverNonce,
-        senderNonce: this.#senderNonce,
-      },
-    );
-
-    this.#patch({ canApprove: false, error: '' });
-    this.#save();
-
-    if (
-      !(await this.#request({
+        receiverPublicKey: this.#receiverPublicKey,
+        senderNonce,
+        senderPublicKey,
+      };
+      const seeds = await deriveSessionChains(
+        senderKeys.privateKey,
+        this.#receiverPublicKey,
+        transcript,
+      );
+      const ratchets = createSessionRatchets(seeds);
+      const envelope = await encryptJson(
+        this.#pairingKey,
+        {
+          roomId: this.#snapshot.roomId,
+          direction: 'sender-to-receiver',
+          kind: 'pair-response',
+          expiresAt: null,
+          generation: null,
+        },
+        { approved: true, ...transcript },
+      );
+      const frame: ClientFrame = {
         version: TRANSPORT_VERSION,
         type: 'approve',
         envelope,
         requestId: randomId(),
-      }))
-    ) {
-      this.#patch({
-        canApprove: true,
-        error: 'The Relay did not accept the approval. Try again.',
-      });
+      };
+
+      this.#phase = 'paired';
+      this.#ratchets = ratchets;
+      this.#pending.set(frame.requestId, frame);
+      this.#patch({ canApprove: false, error: '' });
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
+
+      if (await this.#request(frame)) this.#finishPendingApproval(frame.requestId);
+      else
+        this.#patch({
+          canApprove: true,
+          error: 'The Relay did not accept the approval. Try again.',
+        });
+    } catch {
+      this.#patch({ canApprove: true, error: 'The Receiver supplied an invalid key agreement.' });
     }
   }
 
@@ -233,112 +296,123 @@ export class SessionController {
       type: 'reject',
       requestId: randomId(),
     });
-
-    if (accepted) {
-      await this.#rotatePin();
-    } else {
-      this.#patch({ error: 'The Relay did not accept the rejection. Try again.' });
-    }
+    if (accepted) await this.#rotatePin();
+    else this.#patch({ error: 'The Relay did not accept the rejection. Try again.' });
   }
 
   async sendItem(label: string, value: string, ttl: number): Promise<boolean> {
-    if (!this.#keys || !isItemTtl(ttl)) {
-      return false;
+    if (!this.#ratchets || !isItemTtl(ttl) || this.#itemBusy) return false;
+    this.#itemBusy = true;
+    try {
+      const transition = await advanceSendRatchet(
+        this.#ratchets.senderItem,
+        this.#snapshot.roomId,
+        'sender-item',
+      );
+      if (!transition) return false;
+      const createdAt = Date.now();
+      const expiresAt = createdAt + ttl * 1_000;
+      const id = randomId();
+      const item: Item = { id, label, value, createdAt, expiresAt, ttl };
+      const fields = {
+        roomId: this.#snapshot.roomId,
+        messageId: id,
+        direction: 'sender-to-receiver' as const,
+        kind: 'item' as const,
+        expiresAt,
+        generation: transition.generation,
+      };
+      if (encodePlaintext(fields, item).length > MAX_PLAINTEXT_BYTES) {
+        this.#patch({ error: 'The complete item plaintext exceeds 64 KiB.' });
+        return false;
+      }
+      const envelope = await encryptJson(transition.key, fields, item);
+      const frame: ClientFrame = {
+        version: TRANSPORT_VERSION,
+        type: 'item',
+        envelope,
+        requestId: randomId(),
+      };
+      this.#ratchets = { ...this.#ratchets, senderItem: transition.state };
+      this.#pending.set(frame.requestId, frame);
+      if (!this.#save()) {
+        this.#endLocalSession('Browser session storage is unavailable.');
+        return false;
+      }
+
+      const accepted = await this.#request(frame);
+      this.#pending.delete(frame.requestId);
+      this.#save();
+      if (!accepted) {
+        this.#patch({ error: 'The Relay did not accept this item. Your input was preserved.' });
+        return false;
+      }
+      this.#itemReplay.commit(id);
+      this.#patch({ items: [...this.#snapshot.items, item] });
+      return true;
+    } finally {
+      this.#itemBusy = false;
     }
-
-    const createdAt = Date.now();
-    const expiresAt = createdAt + ttl * 1_000;
-    const id = randomId();
-    const item: Item = { id, label, value, createdAt, expiresAt, ttl };
-    const fields = {
-      roomId: this.#snapshot.roomId,
-      messageId: id,
-      direction: 'sender-to-receiver' as const,
-      kind: 'item' as const,
-      expiresAt,
-    };
-
-    if (encodePlaintext(fields, item).length > MAX_PLAINTEXT_BYTES) {
-      this.#patch({ error: 'The complete item plaintext exceeds 64 KiB.' });
-      return false;
-    }
-
-    const envelope = await encryptJson(this.#keys.item, fields, item);
-    const accepted = await this.#request({
-      version: TRANSPORT_VERSION,
-      type: 'item',
-      envelope,
-      requestId: randomId(),
-    });
-    if (!accepted) {
-      this.#patch({ error: 'The Relay did not accept this item. Your input was preserved.' });
-      return false;
-    }
-
-    this.#itemReplay.commit(id);
-    this.#patch({ items: [...this.#snapshot.items, item] });
-    return true;
   }
 
   async revoke(id: string): Promise<void> {
-    if (!this.#keys || !this.#snapshot.role) {
-      return;
-    }
-
-    const sender = this.#snapshot.role === 'sender';
-    const envelope = await encryptJson(
-      sender ? this.#keys.senderControl : this.#keys.receiverControl,
-      {
-        roomId: this.#snapshot.roomId,
-        direction: sender ? 'sender-to-receiver' : 'receiver-to-sender',
-        kind: 'control',
-        expiresAt: null,
-      },
-      { itemId: id },
-    );
-
-    if (
-      await this.#request({
+    if (!this.#ratchets || !this.#snapshot.role || this.#controlBusy) return;
+    this.#controlBusy = true;
+    try {
+      const sender = this.#snapshot.role === 'sender';
+      const state = sender ? this.#ratchets.senderControl : this.#ratchets.receiverControl;
+      const channel = sender ? 'sender-control' : 'receiver-control';
+      const transition = await advanceSendRatchet(state, this.#snapshot.roomId, channel);
+      if (!transition) return;
+      const envelope = await encryptJson(
+        transition.key,
+        {
+          roomId: this.#snapshot.roomId,
+          direction: sender ? 'sender-to-receiver' : 'receiver-to-sender',
+          kind: 'control',
+          expiresAt: null,
+          generation: transition.generation,
+        },
+        { itemId: id },
+      );
+      const frame: ClientFrame = {
         version: TRANSPORT_VERSION,
         type: 'revoke',
         itemId: id,
         envelope,
         requestId: randomId(),
-      })
-    ) {
-      this.#patch({ items: this.#snapshot.items.filter((item) => item.id !== id) });
-    } else {
-      this.#patch({ error: 'The Relay did not acknowledge revocation.' });
+      };
+      this.#ratchets = sender
+        ? { ...this.#ratchets, senderControl: transition.state }
+        : { ...this.#ratchets, receiverControl: transition.state };
+      this.#pending.set(frame.requestId, frame);
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
+
+      const accepted = await this.#request(frame);
+      this.#pending.delete(frame.requestId);
+      this.#save();
+      if (accepted) this.#patch({ items: this.#snapshot.items.filter((item) => item.id !== id) });
+      else this.#patch({ error: 'The Relay did not acknowledge revocation.' });
+    } finally {
+      this.#controlBusy = false;
     }
   }
 
   async extend(): Promise<void> {
     if (
-      !(await this.#request({
-        version: TRANSPORT_VERSION,
-        type: 'extend',
-        requestId: randomId(),
-      }))
+      !(await this.#request({ version: TRANSPORT_VERSION, type: 'extend', requestId: randomId() }))
     ) {
       this.#patch({ error: 'The Relay did not extend the room.' });
     }
   }
 
   async end(): Promise<void> {
-    await this.#request({
-      version: TRANSPORT_VERSION,
-      type: 'end',
-      requestId: randomId(),
-    });
+    await this.#request({ version: TRANSPORT_VERSION, type: 'end', requestId: randomId() });
     this.#endLocalSession();
   }
 
   leave(): void {
-    this.#transport?.send({
-      version: TRANSPORT_VERSION,
-      type: 'leave',
-      requestId: randomId(),
-    });
+    this.#transport?.send({ version: TRANSPORT_VERSION, type: 'leave', requestId: randomId() });
     this.#endLocalSession();
   }
 
@@ -346,19 +420,15 @@ export class SessionController {
     const params = new URLSearchParams(location.hash.slice(1));
     const roomId = params.get('room');
     const roomKey = params.get('key');
-    if (!roomId || !roomKey) {
-      return false;
-    }
-
+    if (!roomId || !roomKey) return false;
     history.replaceState(null, '', location.pathname + location.search);
     try {
       if (
         !/^[A-Za-z0-9_-]{22}$/.test(roomId) ||
         !/^[A-Za-z0-9_-]{43}$/.test(roomKey) ||
         fromBase64url(roomKey).length !== 32
-      ) {
+      )
         throw new Error('invalid pairing link');
-      }
     } catch {
       this.#patch({ error: 'Invalid pairing link.' });
       return true;
@@ -375,35 +445,34 @@ export class SessionController {
       roomId,
     };
     this.#emit();
-    this.#save();
+    if (!this.#save())
+      return (this.#endLocalSession('Browser session storage is unavailable.'), true);
     this.#connect('join');
     return true;
   }
 
   async #restore(stored: StoredSession): Promise<void> {
     this.#resetPrivateState();
-    this.#roomKey = stored.roomKey;
     this.#credential = stored.credential;
     this.#attached = stored.attached;
-    this.#receiverNonce = stored.receiverNonce ?? '';
-    this.#senderNonce = stored.senderNonce ?? '';
-
-    if (stored.pin) {
+    this.#phase = stored.phase;
+    this.#pending = new Map(stored.pending.map((frame) => [frame.requestId, frame]));
+    if ('roomKey' in stored) this.#roomKey = stored.roomKey;
+    if (stored.phase === 'pairing') {
+      this.#receiverNonce = stored.receiverNonce;
+      this.#receiverPublicKey = stored.receiverPublicKey;
+      if (stored.role === 'receiver') this.#receiverPrivateKey = stored.receiverPrivateKey;
+    }
+    if (stored.phase === 'paired') this.#ratchets = stored.ratchets;
+    if ('pin' in stored && stored.pin) {
       this.#pairingKey = await derivePairingKey(
         fromBase64url(stored.roomKey),
         stored.roomId,
         stored.pin,
       );
     }
-    if (this.#pairingKey && this.#receiverNonce && this.#senderNonce) {
-      this.#keys = await deriveSessionKeys(
-        this.#pairingKey,
-        stored.roomId,
-        this.#receiverNonce,
-        this.#senderNonce,
-      );
-    }
 
+    const omitted = stored.phase === 'paired' && stored.ratchets.senderItem.generation > 0;
     this.#snapshot = {
       ...initialSessionSnapshot(),
       view: stored.role,
@@ -414,37 +483,36 @@ export class SessionController {
         stored.role === 'sender'
           ? `${location.origin}/#room=${stored.roomId}&key=${stored.roomKey}`
           : '',
-      pin: stored.pin,
+      pin: 'pin' in stored ? stored.pin : '',
       receiverView:
         stored.role === 'receiver'
-          ? this.#keys
+          ? stored.phase === 'paired'
             ? 'PAIRED'
-            : this.#receiverNonce
+            : stored.phase === 'pairing'
               ? 'PENDING'
               : 'PIN'
           : 'PIN',
-      canApprove: stored.role === 'sender' && Boolean(this.#receiverNonce && !this.#senderNonce),
+      canApprove: stored.role === 'sender' && stored.phase === 'pairing',
+      itemsOmittedAfterReload: omitted,
     };
     this.#emit();
-
     this.#connect(stored.attached ? 'resume' : stored.role === 'sender' ? 'create' : 'join');
   }
 
   #connect(mode: 'create' | 'join' | 'resume'): void {
     this.#transport?.close();
-    const initial = this.#attachmentFrame(mode);
     this.#transport = new RelayTransport({
       url: webSocketUrl(),
       onStatus: (status) => this.#handleTransportStatus(status),
       onTerminal: (reason) => this.#handleTerminal(reason),
       onFrame: (frame) => this.#handleFrame(frame),
     });
-    this.#transport.start(initial, () => this.#attachmentFrame('resume'));
+    this.#transport.start(this.#attachmentFrame(mode), () => this.#attachmentFrame('resume'));
   }
 
   #attachmentFrame(mode: 'create' | 'join' | 'resume'): ClientFrame {
     const requestId = randomId();
-    if (mode === 'create') {
+    if (mode === 'create')
       return {
         version: TRANSPORT_VERSION,
         type: 'create',
@@ -452,8 +520,7 @@ export class SessionController {
         credential: this.#credential,
         requestId,
       };
-    }
-    if (mode === 'join') {
+    if (mode === 'join')
       return {
         version: TRANSPORT_VERSION,
         type: 'join',
@@ -461,11 +528,7 @@ export class SessionController {
         credential: this.#credential,
         requestId,
       };
-    }
-
-    if (!this.#snapshot.role) {
-      throw new Error('Cannot resume without a role');
-    }
+    if (!this.#snapshot.role) throw new Error('Cannot resume without a role');
     return {
       version: TRANSPORT_VERSION,
       type: 'resume',
@@ -477,13 +540,14 @@ export class SessionController {
   }
 
   #handleTransportStatus(status: TransportStatus): void {
-    if (status === 'connected') {
-      this.#snapshot = reduceConnection(this.#snapshot, { type: 'ready' });
-    } else if (status === 'reconnecting') {
-      this.#snapshot = reduceConnection(this.#snapshot, { type: 'lost' });
-    } else {
-      this.#snapshot = reduceConnection(this.#snapshot, { type: 'connect' });
-    }
+    this.#snapshot = reduceConnection(
+      this.#snapshot,
+      status === 'connected'
+        ? { type: 'ready' }
+        : status === 'reconnecting'
+          ? { type: 'lost' }
+          : { type: 'connect' },
+    );
     this.#emit();
   }
 
@@ -500,17 +564,16 @@ export class SessionController {
   async #handleFrame(frame: ServerFrame): Promise<void> {
     switch (frame.type) {
       case 'error':
-        if (!this.#readyReceived || this.#snapshot.connection !== 'connected') {
+        if (!this.#readyReceived || this.#snapshot.connection !== 'connected')
           this.#endLocalSession(relayErrorMessage(frame.code));
-        } else {
-          this.#patch({ error: relayErrorMessage(frame.code) });
-        }
+        else this.#patch({ error: relayErrorMessage(frame.code) });
         return;
       case 'ready':
         this.#attached = true;
         this.#readyReceived = true;
         await this.#applySnapshot(frame.snapshot);
         this.#save();
+        void this.#replayPending();
         return;
       case 'room_state':
         await this.#applyStatus(frame.status);
@@ -531,9 +594,7 @@ export class SessionController {
         await this.#receiveRevocation(frame.itemId, frame.envelope);
         return;
       case 'ack':
-        if (frame.status) {
-          await this.#applyStatus(frame.status);
-        }
+        if (frame.status) await this.#applyStatus(frame.status);
         return;
       case 'room_ended':
         this.#endLocalSession(roomEndMessage(frame.reason));
@@ -543,47 +604,36 @@ export class SessionController {
 
   async #applySnapshot(snapshot: RoomSnapshot): Promise<void> {
     await this.#applyStatus(snapshot);
-
+    if (snapshot.pairing) {
+      if (this.#snapshot.role === 'sender') {
+        if (this.#phase !== 'paired') await this.#handlePairRequest(snapshot.pairing);
+      } else if (this.#phase !== 'paired') {
+        await this.#handleApproval(snapshot.pairing);
+      }
+    }
     if (this.#snapshot.role === 'receiver' && !snapshot.pairing) {
       this.#patch({
-        receiverView: this.#keys ? 'PAIRED' : this.#receiverNonce ? 'PENDING' : 'PIN',
+        receiverView:
+          this.#phase === 'paired' ? 'PAIRED' : this.#phase === 'pairing' ? 'PENDING' : 'PIN',
       });
     }
-
-    for (const envelope of snapshot.items) {
-      await this.#receiveItem(envelope);
-    }
-
-    if (!snapshot.pairing) {
-      return;
-    }
-    if (this.#snapshot.role === 'sender') {
-      await this.#handlePairRequest(snapshot.pairing);
-    } else {
-      await this.#handleApproval(snapshot.pairing);
-    }
+    for (const envelope of snapshot.items) await this.#receiveItem(envelope);
   }
 
   async #applyStatus(status: RoomStatus): Promise<void> {
     const priorState = this.#snapshot.roomState;
     this.#patch({ roomState: status.state, deadline: status.deadline });
-
     if (
       this.#snapshot.role === 'sender' &&
       status.state === 'WAITING' &&
-      (priorState === 'RECEIVER_GRACE' || this.#keys)
-    ) {
+      (priorState === 'RECEIVER_GRACE' || this.#phase === 'paired')
+    )
       await this.#rotatePin();
-    }
   }
 
   async #handlePairRequest(envelope: EncryptedEnvelope): Promise<void> {
-    if (this.#snapshot.role !== 'sender' || !this.#pairingKey) {
-      return;
-    }
-
+    if (this.#snapshot.role !== 'sender' || !this.#pairingKey) return;
     this.#patch({ roomState: 'PAIR_PENDING' });
-
     try {
       if (
         !isEnvelope(envelope) ||
@@ -594,19 +644,16 @@ export class SessionController {
           kind: 'pair-request',
           expiresAt: 'null',
         })
-      ) {
+      )
         throw new Error('invalid pairing envelope');
-      }
-
-      const body = await decryptJson<{ receiverNonce: string }>(this.#pairingKey, envelope);
-      if (!isNonce(body.receiverNonce)) {
-        throw new Error('invalid receiver nonce');
-      }
-
+      const body = await decryptJson<PairRequestBody>(this.#pairingKey, envelope);
+      if (!isNonce(body.receiverNonce) || !isEncodedEcdhPublicKey(body.receiverPublicKey))
+        throw new Error('invalid pairing body');
       this.#pairingReplay.commit(envelope.messageId);
+      this.#phase = 'pairing';
       this.#receiverNonce = body.receiverNonce;
-      this.#senderNonce = '';
-      this.#keys = null;
+      this.#receiverPublicKey = body.receiverPublicKey;
+      this.#ratchets = null;
       this.#patch({ canApprove: true, roomState: 'PAIR_PENDING', error: '' });
       this.#save();
     } catch {
@@ -615,10 +662,13 @@ export class SessionController {
   }
 
   async #handleApproval(envelope: EncryptedEnvelope): Promise<void> {
-    if (this.#snapshot.role !== 'receiver' || !this.#pairingKey) {
+    if (
+      this.#snapshot.role !== 'receiver' ||
+      !this.#pairingKey ||
+      !this.#receiverPrivateKey ||
+      this.#phase !== 'pairing'
+    )
       return;
-    }
-
     try {
       if (
         !isEnvelope(envelope) ||
@@ -629,33 +679,34 @@ export class SessionController {
           kind: 'pair-response',
           expiresAt: 'null',
         })
-      ) {
+      )
         throw new Error('invalid approval envelope');
-      }
-
-      const body = await decryptJson<{
-        approved: boolean;
-        receiverNonce: string;
-        senderNonce: string;
-      }>(this.#pairingKey, envelope);
+      const body = await decryptJson<ApprovalBody>(this.#pairingKey, envelope);
       if (
-        body.receiverNonce !== this.#receiverNonce ||
         !body.approved ||
-        !isNonce(body.senderNonce)
-      ) {
+        body.receiverNonce !== this.#receiverNonce ||
+        body.receiverPublicKey !== this.#receiverPublicKey ||
+        !isNonce(body.senderNonce) ||
+        !isEncodedEcdhPublicKey(body.senderPublicKey)
+      )
         throw new Error('invalid approval body');
-      }
-
+      const privateKey = await importEcdhPrivateKey(this.#receiverPrivateKey);
+      const seeds = await deriveSessionChains(privateKey, body.senderPublicKey, {
+        roomId: this.#snapshot.roomId,
+        receiverNonce: body.receiverNonce,
+        receiverPublicKey: body.receiverPublicKey,
+        senderNonce: body.senderNonce,
+        senderPublicKey: body.senderPublicKey,
+      });
+      this.#ratchets = createSessionRatchets(seeds);
+      this.#phase = 'paired';
       this.#pairingReplay.commit(envelope.messageId);
-      this.#senderNonce = body.senderNonce;
-      this.#keys = await deriveSessionKeys(
-        this.#pairingKey,
-        this.#snapshot.roomId,
-        this.#receiverNonce,
-        this.#senderNonce,
-      );
-      this.#patch({ receiverView: 'PAIRED', roomState: 'PAIRED', error: '' });
-      this.#save();
+      this.#pending.clear();
+      this.#roomKey = '';
+      this.#pairingKey = null;
+      this.#clearPairingAttempt();
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
+      this.#patch({ pin: '', receiverView: 'PAIRED', roomState: 'PAIRED', error: '' });
     } catch {
       this.#patch({ error: 'Approval authentication failed.' });
     }
@@ -663,7 +714,8 @@ export class SessionController {
 
   async #receiveItem(envelope: EncryptedEnvelope): Promise<void> {
     if (
-      !this.#keys ||
+      this.#snapshot.role !== 'receiver' ||
+      !this.#ratchets ||
       !isEnvelope(envelope) ||
       this.#itemReplay.has(envelope.messageId) ||
       !matchesEnvelope(envelope, {
@@ -672,35 +724,38 @@ export class SessionController {
         kind: 'item',
         expiresAt: 'present',
       }) ||
+      envelope.generation === null ||
       envelope.expiresAt === null ||
       envelope.expiresAt <= Date.now()
-    ) {
+    )
       return;
-    }
 
+    const transition = await prepareReceiveRatchet(
+      this.#ratchets.senderItem,
+      envelope.generation,
+      this.#snapshot.roomId,
+      'sender-item',
+      Date.now(),
+    );
+    if (!transition) return;
     try {
-      const item = await decryptJson<Item & Record<string, unknown>>(this.#keys.item, envelope);
-      if (!isValidItem(item, envelope)) {
-        return;
-      }
-
+      const item = await decryptJson<Item & Record<string, unknown>>(transition.key, envelope);
+      if (!isValidItem(item, envelope)) return;
+      this.#ratchets = { ...this.#ratchets, senderItem: transition.state };
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
       this.#itemReplay.commit(envelope.messageId);
-      this.#patch({
-        items: [...this.#snapshot.items.filter((old) => old.id !== item.id), item],
-      });
+      this.#patch({ items: [...this.#snapshot.items.filter((old) => old.id !== item.id), item] });
     } catch {
       this.#patch({ error: 'An encrypted item failed authentication.' });
     }
   }
 
   async #receiveRevocation(itemId: string, envelope: EncryptedEnvelope): Promise<void> {
-    if (!this.#keys || !this.#snapshot.role) {
-      return;
-    }
-
+    if (!this.#ratchets || !this.#snapshot.role || envelope.generation === null) return;
     const sender = this.#snapshot.role === 'sender';
     const direction = sender ? 'receiver-to-sender' : 'sender-to-receiver';
-    const key = sender ? this.#keys.receiverControl : this.#keys.senderControl;
+    const channel = sender ? 'receiver-control' : 'sender-control';
+    const state = sender ? this.#ratchets.receiverControl : this.#ratchets.senderControl;
     if (
       !isEnvelope(envelope) ||
       this.#controlReplay.has(envelope.messageId) ||
@@ -710,18 +765,25 @@ export class SessionController {
         kind: 'control',
         expiresAt: 'null',
       })
-    ) {
+    )
       return;
-    }
-
+    const transition = await prepareReceiveRatchet(
+      state,
+      envelope.generation,
+      this.#snapshot.roomId,
+      channel,
+      Date.now(),
+    );
+    if (!transition) return;
     try {
-      const body = await decryptJson<{ itemId: string }>(key, envelope);
-      if (body.itemId !== itemId) {
-        throw new Error('control item mismatch');
-      }
-
+      const body = await decryptJson<{ itemId: string }>(transition.key, envelope);
+      if (body.itemId !== itemId) throw new Error('control item mismatch');
+      this.#ratchets = sender
+        ? { ...this.#ratchets, receiverControl: transition.state }
+        : { ...this.#ratchets, senderControl: transition.state };
+      if (!this.#save()) return this.#endLocalSession('Browser session storage is unavailable.');
       this.#controlReplay.commit(envelope.messageId);
-      this.#patch({ items: this.#snapshot.items.filter((item) => item.id !== body.itemId) });
+      this.#patch({ items: this.#snapshot.items.filter((item) => item.id !== itemId) });
     } catch {
       this.#patch({ error: 'A control message failed authentication.' });
     }
@@ -734,12 +796,13 @@ export class SessionController {
       this.#snapshot.roomId,
       pin,
     );
-    this.#receiverNonce = '';
-    this.#senderNonce = '';
-    this.#keys = null;
+    this.#phase = 'waiting';
+    this.#ratchets = null;
+    this.#pending.clear();
+    this.#clearPairingAttempt();
     this.#pairingReplay = new ReplayGuard();
     this.#controlReplay = new ReplayGuard();
-    this.#patch({ pin, canApprove: false, items: [] });
+    this.#patch({ pin, canApprove: false, items: [], itemsOmittedAfterReload: false });
     this.#save();
   }
 
@@ -749,10 +812,11 @@ export class SessionController {
     this.#credential = base64url(randomBytes(32));
     this.#attached = false;
     this.#readyReceived = false;
+    this.#phase = 'waiting';
     this.#pairingKey = null;
-    this.#keys = null;
-    this.#receiverNonce = '';
-    this.#senderNonce = '';
+    this.#ratchets = null;
+    this.#pending.clear();
+    this.#clearPairingAttempt();
     this.#pairingReplay = new ReplayGuard();
     this.#controlReplay = new ReplayGuard();
     this.#patch({
@@ -766,38 +830,138 @@ export class SessionController {
     this.#connect('join');
   }
 
-  #request(frame: ClientFrame): Promise<boolean> {
-    if (!this.#transport || this.#snapshot.connection === 'terminal') {
-      return Promise.resolve(false);
+  async #replayPending(): Promise<void> {
+    for (const frame of [...this.#pending.values()]) {
+      const accepted = await this.#request(frame);
+      if (accepted && frame.type === 'approve') {
+        this.#finishPendingApproval(frame.requestId);
+        continue;
+      }
+      if (!accepted && frame.type === 'approve') {
+        this.#patch({
+          canApprove: true,
+          error: 'The Relay did not accept the approval. Try again.',
+        });
+        continue;
+      }
+      this.#pending.delete(frame.requestId);
+      if (!accepted && frame.type === 'pair') {
+        this.#clearPairingAttempt();
+        this.#phase = 'waiting';
+        this.#patch({
+          pin: '',
+          receiverView: 'PIN',
+          error: 'The Relay did not accept the pairing request. Try again.',
+        });
+      }
+      this.#save();
     }
+  }
+
+  #finishPendingApproval(requestId: string): void {
+    this.#pending.delete(requestId);
+    this.#pairingKey = null;
+    this.#clearPairingAttempt();
+    this.#patch({ canApprove: false });
+    this.#save();
+  }
+
+  #request(frame: ClientFrame): Promise<boolean> {
+    if (!this.#transport || this.#snapshot.connection === 'terminal') return Promise.resolve(false);
     return this.#transport.request(frame);
   }
 
-  #save(): void {
-    if (!this.#snapshot.role || !this.#snapshot.roomId || !this.#roomKey || !this.#credential) {
-      return;
-    }
-
-    saveStoredSession(sessionStorage, {
+  #save(): boolean {
+    if (!this.#snapshot.role || !this.#snapshot.roomId || !this.#credential) return false;
+    const common = {
       version: TRANSPORT_VERSION,
-      role: this.#snapshot.role,
       roomId: this.#snapshot.roomId,
-      roomKey: this.#roomKey,
-      pin: this.#snapshot.pin,
       credential: this.#credential,
       attached: this.#attached,
-      ...(this.#receiverNonce ? { receiverNonce: this.#receiverNonce } : {}),
-      ...(this.#senderNonce ? { senderNonce: this.#senderNonce } : {}),
-    });
+      pending: [...this.#pending.values()],
+    };
+    let stored: StoredSession;
+    if (this.#snapshot.role === 'sender') {
+      if (!this.#roomKey || !this.#snapshot.pin) return false;
+      stored =
+        this.#phase === 'paired' && this.#ratchets
+          ? {
+              ...common,
+              role: 'sender',
+              phase: 'paired',
+              roomKey: this.#roomKey,
+              pin: this.#snapshot.pin,
+              ratchets: this.#ratchets,
+            }
+          : this.#phase === 'pairing' && this.#receiverNonce && this.#receiverPublicKey
+            ? {
+                ...common,
+                role: 'sender',
+                phase: 'pairing',
+                roomKey: this.#roomKey,
+                pin: this.#snapshot.pin,
+                receiverNonce: this.#receiverNonce,
+                receiverPublicKey: this.#receiverPublicKey,
+              }
+            : {
+                ...common,
+                role: 'sender',
+                phase: 'waiting',
+                roomKey: this.#roomKey,
+                pin: this.#snapshot.pin,
+              };
+    } else {
+      stored =
+        this.#phase === 'paired' && this.#ratchets
+          ? { ...common, role: 'receiver', phase: 'paired', ratchets: this.#ratchets }
+          : this.#phase === 'pairing' &&
+              this.#roomKey &&
+              this.#snapshot.pin &&
+              this.#receiverNonce &&
+              this.#receiverPublicKey &&
+              this.#receiverPrivateKey
+            ? {
+                ...common,
+                role: 'receiver',
+                phase: 'pairing',
+                roomKey: this.#roomKey,
+                pin: this.#snapshot.pin,
+                receiverNonce: this.#receiverNonce,
+                receiverPublicKey: this.#receiverPublicKey,
+                receiverPrivateKey: this.#receiverPrivateKey,
+              }
+            : { ...common, role: 'receiver', phase: 'waiting', roomKey: this.#roomKey, pin: '' };
+    }
+    try {
+      saveStoredSession(sessionStorage, stored);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   #endLocalSession(message = ''): void {
     this.#transport?.close();
     this.#transport = null;
-    clearStoredSession(sessionStorage);
+    this.#clearStorage();
     this.#resetPrivateState();
     this.#snapshot = { ...initialSessionSnapshot(), error: message };
     this.#emit();
+  }
+
+  #clearStorage(): boolean {
+    try {
+      clearStoredSession(sessionStorage);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #clearPairingAttempt(): void {
+    this.#receiverNonce = '';
+    this.#receiverPublicKey = '';
+    this.#receiverPrivateKey = '';
   }
 
   #resetPrivateState(): void {
@@ -807,10 +971,11 @@ export class SessionController {
     this.#credential = '';
     this.#attached = false;
     this.#readyReceived = false;
+    this.#phase = 'waiting';
     this.#pairingKey = null;
-    this.#keys = null;
-    this.#receiverNonce = '';
-    this.#senderNonce = '';
+    this.#ratchets = null;
+    this.#pending.clear();
+    this.#clearPairingAttempt();
     this.#itemReplay = new ReplayGuard();
     this.#pairingReplay = new ReplayGuard();
     this.#controlReplay = new ReplayGuard();
@@ -822,9 +987,7 @@ export class SessionController {
   }
 
   #emit(): void {
-    for (const listener of this.#listeners) {
-      listener(this.#snapshot);
-    }
+    for (const listener of this.#listeners) listener(this.#snapshot);
   }
 }
 
@@ -880,14 +1043,8 @@ function relayErrorMessage(code: unknown): string {
 }
 
 function roomEndMessage(reason: unknown): string {
-  if (reason === 'expired') {
-    return 'The room expired.';
-  }
-  if (reason === 'busy') {
-    return 'The room ended because it reached its capacity limit.';
-  }
-  if (reason === 'shutdown') {
-    return 'The Relay restarted. Create a new room to continue.';
-  }
+  if (reason === 'expired') return 'The room expired.';
+  if (reason === 'busy') return 'The room ended because it reached its capacity limit.';
+  if (reason === 'shutdown') return 'The Relay restarted. Create a new room to continue.';
   return 'The room ended.';
 }

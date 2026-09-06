@@ -24,15 +24,15 @@ KeyBridge transfers passwords, tokens, recovery codes, and configuration text be
 
 The browsers encrypt pairing messages and secret values before transmission. The in-memory **Relay** forwards and temporarily retains ciphertext. It does not receive the room key, PIN, or plaintext.
 
-| Property        | Behavior                                                  |
-| --------------- | --------------------------------------------------------- |
-| Topology        | One Sender, one Receiver, and one Relay process           |
-| Encryption      | HKDF-SHA-256 and AES-256-GCM through Web Crypto           |
-| Storage         | Relay memory and browser `sessionStorage` only            |
-| Item lifetime   | 30, 60, 120, or 300 seconds                               |
-| Room lifetime   | 10 minutes after creation, item storage, or extension     |
-| Reconnection    | Independent 60-second grace period for each browser       |
-| Browser support | Current Chrome, Firefox, and Safari on desktop and mobile |
+| Property        | Behavior                                                     |
+| --------------- | ------------------------------------------------------------ |
+| Topology        | One Sender, one Receiver, and one Relay process              |
+| Encryption      | P-256 ECDH, HKDF-SHA-256, and AES-256-GCM through Web Crypto |
+| Storage         | Relay memory and browser `sessionStorage` only               |
+| Item lifetime   | 30, 60, 120, or 300 seconds                                  |
+| Room lifetime   | 10 minutes after creation, item storage, or extension        |
+| Reconnection    | Independent 60-second grace period for each browser          |
+| Browser support | Current Chrome, Firefox, and Safari on desktop and mobile    |
 
 KeyBridge is not a password manager, file-transfer service, or long-term secret store. A Relay restart ends every room and removes its in-memory state.
 
@@ -91,7 +91,7 @@ The [self-hosting guide](docs/self-hosting.md) provides the matching Docker Comp
 
 KeyBridge protects secret payloads while they pass through the Relay. It does not make the web server trustless. A compromised server can supply modified JavaScript that captures keys or plaintext.
 
-KeyBridge also cannot protect against compromised devices, browser extensions, screen capture, clipboard residue, memory dumps, or a malicious Relay that retains ciphertext. Encrypted envelope version 1 has no application-layer forward secrecy.
+KeyBridge also cannot protect against compromised devices, browser extensions, screen capture, clipboard residue, memory dumps, or a malicious Relay that retains ciphertext. Ephemeral key agreement and symmetric ratchets protect processed past messages after later key disclosure. They do not protect current or future messages after a browser-state compromise.
 
 Read the [security model](docs/security-model.md) before deployment. It defines the supported claim, visible metadata, Relay powers, and known limits.
 
@@ -102,8 +102,9 @@ Read the [security model](docs/security-model.md) before deployment. It defines 
 | [Self-hosting](docs/self-hosting.md)      | Docker, Caddy, HTTPS, proxy trust, updates, and operational limits  |
 | [Development](docs/development.md)        | Development containers, checks, browser tests, builds, and releases |
 | [Security model](docs/security-model.md)  | Security claim, metadata exposure, trust boundaries, and exclusions |
-| [Protocol version 2](docs/protocol.md)    | Current transport, room lifecycle, reconnection, limits, and errors |
-| [Protocol version 1](docs/protocol-v1.md) | Archived transport and the current encrypted-envelope key schedule  |
+| [Protocol version 3](docs/protocol.md)    | Current pairing, ratchet, transport, lifecycle, limits, and errors  |
+| [Protocol version 2](docs/protocol-v2.md) | Archived transport and encrypted-envelope version 1                 |
+| [Protocol version 1](docs/protocol-v1.md) | Archived initial transport and envelope key schedule                |
 
 ## License
 

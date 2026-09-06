@@ -10,6 +10,7 @@
   export let connection: ConnectionState;
   export let deadline: number;
   export let items: Item[];
+  export let itemsOmittedAfterReload = false;
   export let canApprove: boolean;
   export let onApprove: () => void;
   export let onReject: () => void;
@@ -277,6 +278,12 @@
     </button>
     <button class="button danger" type="button" onclick={onEnd}>End room</button>
   </div>
+
+  {#if itemsOmittedAfterReload}
+    <p class="connection-notice" role="status">
+      Secrets from before this reload were not restored. New secrets remain available.
+    </p>
+  {/if}
 
   {#if items.length > 0}
     <section class="secret-list">

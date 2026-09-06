@@ -17,12 +17,13 @@ function envelope(
   expiresAt: number | null,
 ) {
   return {
-    version: 1 as const,
+    version: 2 as const,
     roomId,
     messageId,
     direction,
     kind,
     expiresAt,
+    generation: kind === 'pair-request' || kind === 'pair-response' ? null : 0,
     nonce: 'N'.repeat(16),
     ciphertext: 'encrypted',
   };

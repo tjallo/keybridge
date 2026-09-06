@@ -26,6 +26,7 @@ export interface SessionSnapshot {
   deadline: number;
   error: string;
   canApprove: boolean;
+  itemsOmittedAfterReload: boolean;
   items: Item[];
 }
 
@@ -49,6 +50,7 @@ export function initialSessionSnapshot(): SessionSnapshot {
     deadline: 0,
     error: '',
     canApprove: false,
+    itemsOmittedAfterReload: false,
     items: [],
   };
 }

@@ -1,6 +1,6 @@
 import { isEnvelope, type EncryptedEnvelope } from './envelope.js';
 
-export const TRANSPORT_VERSION = 2 as const;
+export const TRANSPORT_VERSION = 3 as const;
 export const RECONNECT_GRACE_MS = 60_000;
 export const HEARTBEAT_INTERVAL_MS = 5_000;
 export const HEARTBEAT_ALLOWANCE_MS = HEARTBEAT_INTERVAL_MS * 2;

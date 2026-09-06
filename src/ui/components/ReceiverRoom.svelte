@@ -5,6 +5,7 @@
   export let state: ReceiverView;
   export let connection: ConnectionState;
   export let items: Item[];
+  export let itemsOmittedAfterReload = false;
   export let onSubmitPin: (pin: string) => void;
   export let onRevoke: (id: string) => void;
   export let onLeave: () => void;
@@ -73,6 +74,12 @@
       <span aria-hidden="true">✓</span>
       <p>Paired. Secret values stay hidden until you reveal them.</p>
     </div>
+
+    {#if itemsOmittedAfterReload}
+      <p class="receiver-connection" role="status">
+        Secrets from before this reload were not restored. New secrets remain available.
+      </p>
+    {/if}
 
     {#if items.length === 0}
       <div class="empty-state">

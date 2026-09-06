@@ -17,12 +17,13 @@ function envelope(
   messageId = id('M'),
 ) {
   return {
-    version: 1,
+    version: 2,
     roomId,
     messageId,
     direction,
     kind,
     expiresAt,
+    generation: kind === 'pair-request' || kind === 'pair-response' ? null : 0,
     nonce: 'N'.repeat(16),
     ciphertext: 'encrypted-by-browser',
   };
@@ -347,13 +348,13 @@ test('invalid room identifiers and unsupported versions receive public errors', 
       credential: credential('S'),
       requestId: id('R'),
     },
-    {
-      version: 1,
+    ...[1, 2].map((version) => ({
+      version,
       type: 'create',
       roomId: id('F'),
       credential: credential('S'),
       requestId: id('R'),
-    },
+    })),
   ]) {
     const socket = await connect(port);
     const error = event(socket, 'error');

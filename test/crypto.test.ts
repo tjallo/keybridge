@@ -1,16 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  derivePairingKey,
-  deriveSessionKeys,
-  encryptJson,
-  decryptJson,
-  generatePin,
   ReplayGuard,
-} from '../src/ui/crypto.ts';
+  decryptJson,
+  derivePairingKey,
+  deriveSessionChains,
+  encryptJson,
+  exportEcdhPrivateKey,
+  exportEcdhPublicKey,
+  generateEcdhKeyPair,
+  generatePin,
+  importEcdhPrivateKey,
+  pairingTranscriptBytes,
+} from '../build/ui/crypto.js';
+
 const hex = (value: string) =>
   Uint8Array.from(value.match(/../g) ?? [], (byte) => Number.parseInt(byte, 16));
 const toHex = (value: ArrayBuffer) => Buffer.from(value).toString('hex');
+const b64 = (value: string) => Buffer.from(value, 'hex').toString('base64url');
+
+const p1 = {
+  d: b64('00'.repeat(31) + '01'),
+  x: b64('6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296'),
+  y: b64('4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5'),
+};
+const p2 = {
+  d: b64('00'.repeat(31) + '02'),
+  x: b64('7cf27b188d034f7e8a52380304b51ac3c08969e277f21b35a60b48fc47669978'),
+  y: b64('07775510db8ed040293d9ac69f7430dbba7dade63ce982299e04b79d227873d1'),
+};
+
+async function privateKey(point: typeof p1): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    'jwk',
+    { kty: 'EC', crv: 'P-256', ext: false, key_ops: ['deriveBits'], ...point },
+    { name: 'ECDH', namedCurve: 'P-256' },
+    false,
+    ['deriveBits'],
+  );
+}
+
+const publicKey = (point: typeof p1) =>
+  Buffer.concat([
+    Buffer.from([4]),
+    Buffer.from(point.x, 'base64url'),
+    Buffer.from(point.y, 'base64url'),
+  ]).toString('base64url');
 
 test('PIN generation rejects bytes outside the unbiased range', () => {
   const original = crypto.getRandomValues;
@@ -46,79 +81,71 @@ test('fixed RFC 5869 HKDF-SHA256 vector', async () => {
   assert.equal(toHex(bits), '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf');
 });
 
-test('fixed AES-256-GCM vector', async () => {
-  const key = await crypto.subtle.importKey('raw', new Uint8Array(32), { name: 'AES-GCM' }, false, [
-    'encrypt',
-  ]);
-  const output = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: new Uint8Array(12) },
-    key,
-    new Uint8Array(),
+test('fixed P-256 transcript derives matching channel seeds', async () => {
+  const transcript = {
+    roomId: 'AAAAAAAAAAAAAAAAAAAAAA',
+    receiverNonce: 'RRRRRRRRRRRRRRRRRRRRRR',
+    receiverPublicKey: publicKey(p1),
+    senderNonce: 'SSSSSSSSSSSSSSSSSSSSSS',
+    senderPublicKey: publicKey(p2),
+  };
+  assert.equal(
+    Buffer.from(pairingTranscriptBytes(transcript)).toString(),
+    JSON.stringify([
+      2,
+      'keybridge-v2/session',
+      transcript.roomId,
+      transcript.receiverNonce,
+      transcript.receiverPublicKey,
+      transcript.senderNonce,
+      transcript.senderPublicKey,
+    ]),
   );
-  assert.equal(toHex(output), '530f8afbc74536b9a963b4f1c4cb738b');
+  const receiver = await deriveSessionChains(
+    await privateKey(p1),
+    transcript.senderPublicKey,
+    transcript,
+  );
+  const sender = await deriveSessionChains(
+    await privateKey(p2),
+    transcript.receiverPublicKey,
+    transcript,
+  );
+  assert.deepEqual(receiver, sender);
+  assert.deepEqual(receiver, {
+    senderItem: 'enlCyRAUJAZg-4e7G_6a3Usz1qi3gaPfgh5tY1V0DzA',
+    senderControl: '2BqULCawo1s3TofeR3UfD2kDvx9qYCEiajLx5b4G0nI',
+    receiverControl: '23K_-yNDZXLcOX8fKNGrCRBI71bl0CFvKpcyGD7-kUA',
+  });
+
+  const substituted = await deriveSessionChains(await privateKey(p1), transcript.senderPublicKey, {
+    ...transcript,
+    senderNonce: 'TTTTTTTTTTTTTTTTTTTTTT',
+  });
+  assert.notDeepEqual(substituted, receiver);
 });
 
-test('both browsers derive matching pairing and directional session keys', async () => {
-  const roomKey = new Uint8Array(32).fill(7);
-  const roomId = 'AAAAAAAAAAAAAAAAAAAAAA';
-  const sender = await derivePairingKey(roomKey, roomId, '2345-6789');
-  const receiver = await derivePairingKey(roomKey, roomId, '23456789');
-  const wrong = await derivePairingKey(roomKey, roomId, '2345678A');
+test('exported PKCS#8 Receiver key derives the same secret after reload', async () => {
+  const receiver = await generateEcdhKeyPair(true);
+  const sender = await generateEcdhKeyPair(false);
+  const receiverPublicKey = await exportEcdhPublicKey(receiver.publicKey);
+  const senderPublicKey = await exportEcdhPublicKey(sender.publicKey);
+  const transcript = {
+    roomId: 'AAAAAAAAAAAAAAAAAAAAAA',
+    receiverNonce: 'RRRRRRRRRRRRRRRRRRRRRR',
+    receiverPublicKey,
+    senderNonce: 'SSSSSSSSSSSSSSSSSSSSSS',
+    senderPublicKey,
+  };
+  const stored = await exportEcdhPrivateKey(receiver.privateKey);
+  const restored = await importEcdhPrivateKey(stored);
   assert.deepEqual(
-    Buffer.from(await crypto.subtle.exportKey('raw', sender)),
-    Buffer.from(await crypto.subtle.exportKey('raw', receiver)),
-  );
-  assert.notDeepEqual(
-    Buffer.from(await crypto.subtle.exportKey('raw', sender)),
-    Buffer.from(await crypto.subtle.exportKey('raw', wrong)),
-  );
-  const a = await deriveSessionKeys(sender, roomId, 'receiver', 'sender');
-  const b = await deriveSessionKeys(receiver, roomId, 'receiver', 'sender');
-  const envelope = await encryptJson(
-    a.item,
-    { roomId, direction: 'sender-to-receiver', kind: 'item', expiresAt: Date.now() + 1000 },
-    { sentinel: 'KNOWN-PLAINTEXT' },
-  );
-  assert.ok(!JSON.stringify(envelope).includes('KNOWN-PLAINTEXT'));
-  assert.equal(
-    (await decryptJson<{ sentinel: string }>(b.item, envelope)).sentinel,
-    'KNOWN-PLAINTEXT',
-  );
-  await assert.rejects(() => decryptJson(a.senderControl, envelope));
-  await assert.rejects(() => decryptJson(a.receiverControl, envelope));
-});
-
-test('directional control envelopes authenticate revocation identifiers', async () => {
-  const pairing = await derivePairingKey(
-    new Uint8Array(32).fill(9),
-    'AAAAAAAAAAAAAAAAAAAAAA',
-    '23456789',
-  );
-  const keys = await deriveSessionKeys(pairing, 'AAAAAAAAAAAAAAAAAAAAAA', 'receiver', 'sender');
-  const itemId = 'IIIIIIIIIIIIIIIIIIIIII';
-  const envelope = await encryptJson(
-    keys.senderControl,
-    {
-      roomId: 'AAAAAAAAAAAAAAAAAAAAAA',
-      messageId: 'CCCCCCCCCCCCCCCCCCCCCC',
-      direction: 'sender-to-receiver',
-      kind: 'control',
-      expiresAt: null,
-    },
-    { itemId },
-  );
-  assert.equal(envelope.messageId, 'CCCCCCCCCCCCCCCCCCCCCC');
-  assert.equal(
-    (await decryptJson<{ itemId: string }>(keys.senderControl, envelope)).itemId,
-    itemId,
-  );
-  await assert.rejects(() => decryptJson(keys.receiverControl, envelope));
-  await assert.rejects(() =>
-    decryptJson(keys.senderControl, { ...envelope, direction: 'receiver-to-sender' }),
+    await deriveSessionChains(restored, senderPublicKey, transcript),
+    await deriveSessionChains(sender.privateKey, receiverPublicKey, transcript),
   );
 });
 
-test('ciphertext, AAD modification, and repeated message identifiers are rejected', async () => {
+test('pairing encryption authenticates headers and generation', async () => {
   const key = await derivePairingKey(
     new Uint8Array(32).fill(1),
     'AAAAAAAAAAAAAAAAAAAAAA',
@@ -131,17 +158,17 @@ test('ciphertext, AAD modification, and repeated message identifiers are rejecte
       direction: 'receiver-to-sender',
       kind: 'pair-request',
       expiresAt: null,
+      generation: null,
     },
     { proof: true },
   );
-  await assert.rejects(() =>
-    decryptJson(key, {
-      ...envelope,
-      ciphertext: (envelope.ciphertext[0] === 'A' ? 'B' : 'A') + envelope.ciphertext.slice(1),
-    }),
-  );
+  assert.equal((await decryptJson<{ proof: boolean }>(key, envelope)).proof, true);
   await assert.rejects(() => decryptJson(key, { ...envelope, direction: 'sender-to-receiver' }));
+  await assert.rejects(() => decryptJson(key, { ...envelope, generation: 0 }));
+});
+
+test('repeated message identifiers are rejected', () => {
   const guard = new ReplayGuard();
-  assert.equal(guard.accept(envelope.messageId), true);
-  assert.equal(guard.accept(envelope.messageId), false);
+  assert.equal(guard.accept('M'.repeat(22)), true);
+  assert.equal(guard.accept('M'.repeat(22)), false);
 });

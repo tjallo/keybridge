@@ -80,12 +80,20 @@ test('complete Sender to Receiver encrypted text flow', async ({ browser, baseUR
     })),
   ).toEqual({ start: 0, end: 'KNOWN-PLAINTEXT-SENTINEL'.length });
 
+  await reload(room.sender);
+  await expect(room.sender.getByRole('article')).toHaveCount(0);
+  await expect(room.sender.getByText('Secrets from before this reload')).toBeVisible();
   await reload(room.receiver);
-  await expect(value).toHaveValue('••••••••••••');
-  await card.getByRole('button', { name: 'Reveal' }).click();
-  await expect(value).toHaveValue('KNOWN-PLAINTEXT-SENTINEL');
-  await card.getByRole('button', { name: 'Revoke' }).click();
   await expect(card).toHaveCount(0);
+  await expect(room.receiver.getByText('Secrets from before this reload')).toBeVisible();
+
+  await room.sender.getByLabel('Label').fill('After reload');
+  await room.sender.getByLabel('Secret text').fill('new generation');
+  await room.sender.getByRole('button', { name: 'Send secret' }).click();
+  const newCard = room.receiver.getByRole('article', { name: 'Secret After reload' });
+  await expect(newCard).toBeVisible();
+  await newCard.getByRole('button', { name: 'Revoke' }).click();
+  await expect(newCard).toHaveCount(0);
 
   expect(requests.every((url) => new URL(url).origin === new URL(baseURL!).origin)).toBe(true);
   await endRoom(room.sender);
@@ -141,6 +149,8 @@ test('wrong PIN rejection recovers and Sender reload preserves approval', async 
   await receiver.getByRole('button', { name: 'Request pairing' }).click();
   await expect(sender.getByText('A Receiver supplied the correct PIN')).toBeVisible();
 
+  await reload(receiver);
+  await expect(receiver.getByText('Waiting for approval')).toBeVisible();
   await reload(sender);
   await expect(sender.getByText('A Receiver supplied the correct PIN')).toBeVisible();
   await sender.getByRole('button', { name: 'Approve Receiver' }).click();
@@ -186,12 +196,12 @@ test('ending a paired room clears all session fields before a new room', async (
   expect(secondLink).not.toBe(firstLink);
 
   const stored = await room.sender.evaluate(() => {
-    const raw = sessionStorage.getItem('keybridge.room.v2');
+    const raw = sessionStorage.getItem('keybridge.room.v3');
     return raw ? (JSON.parse(raw) as Record<string, unknown>) : null;
   });
-  expect(stored).not.toHaveProperty('receiverNonce');
-  expect(stored).not.toHaveProperty('senderNonce');
-  expect(stored?.version).toBe(2);
+  expect(stored?.phase).toBe('waiting');
+  expect(stored).not.toHaveProperty('ratchets');
+  expect(stored?.version).toBe(3);
 
   await reload(room.sender);
   await expect(room.sender.getByLabel('Pairing link')).toHaveValue(secondLink);
@@ -205,22 +215,24 @@ test('terminal resume failure clears session credentials', async ({ page, baseUR
   await navigate(page, baseURL!);
   await page.evaluate(() => {
     sessionStorage.setItem(
-      'keybridge.room.v2',
+      'keybridge.room.v3',
       JSON.stringify({
-        version: 2,
+        version: 3,
         role: 'sender',
+        phase: 'waiting',
         roomId: 'A'.repeat(22),
         roomKey: 'K'.repeat(43),
         pin: '23456789',
         credential: 'C'.repeat(43),
         attached: true,
+        pending: [],
       }),
     );
   });
 
   await reload(page);
   await expect(page.getByRole('alert')).toContainText('room is no longer available');
-  expect(await page.evaluate(() => sessionStorage.getItem('keybridge.room.v2'))).toBeNull();
+  expect(await page.evaluate(() => sessionStorage.getItem('keybridge.room.v3'))).toBeNull();
 });
 
 test('security headers, transparency, fragment removal, and second Receiver rejection', async ({
@@ -239,7 +251,7 @@ test('security headers, transparency, fragment removal, and second Receiver reje
   const sender = await browser.newPage();
   await navigate(sender, baseURL!);
   await sender.getByRole('button', { name: 'Security & transparency' }).click();
-  await expect(sender.getByText('no forward secrecy', { exact: false })).toBeVisible();
+  await expect(sender.getByText('deletes processed message keys', { exact: false })).toBeVisible();
 
   await navigate(sender, baseURL!);
   await sender.getByRole('button', { name: 'Create room' }).click();
