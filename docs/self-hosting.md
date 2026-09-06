@@ -44,7 +44,7 @@ services:
         ipv4_address: 172.30.0.2
 
   keybridge:
-    image: ghcr.io/tjallo/keybridge:2.2.0
+    image: ghcr.io/tjallo/keybridge:3.0.0
     restart: unless-stopped
     environment:
       PUBLIC_ORIGIN: https://keybridge.example.com

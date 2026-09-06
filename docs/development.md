@@ -112,7 +112,7 @@ docker compose down
 Choose a semantic version in `x.y.z` format. Update the package files without creating an npm tag:
 
 ```sh
-VERSION=2.2.0
+VERSION=3.0.0
 npm version "$VERSION" --no-git-tag-version
 ```
 
