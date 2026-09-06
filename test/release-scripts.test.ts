@@ -56,7 +56,7 @@ test('release metadata reports transport and envelope versions', async (context)
   const metadata = JSON.parse(
     await readFile(join(directory, 'dist', 'release.json'), 'utf8'),
   ) as Record<string, unknown>;
-  assert.equal(metadata.transportVersion, 2);
-  assert.equal(metadata.envelopeVersion, 1);
+  assert.equal(metadata.transportVersion, 3);
+  assert.equal(metadata.envelopeVersion, 2);
   assert.equal(metadata.sourceCommit, 'abc123');
 });

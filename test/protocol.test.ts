@@ -25,6 +25,7 @@ function envelope(overrides: Partial<EncryptedEnvelope> = {}): EncryptedEnvelope
     direction: 'sender-to-receiver',
     kind: 'item',
     expiresAt: 1_700_000_000_000,
+    generation: 0,
     nonce: 'N'.repeat(16),
     ciphertext: 'AQID',
     ...overrides,
@@ -47,11 +48,11 @@ const status = {
 } as const;
 
 test('transport and encrypted envelope versions are independent', () => {
-  assert.equal(TRANSPORT_VERSION, 2);
-  assert.equal(ENVELOPE_VERSION, 1);
+  assert.equal(TRANSPORT_VERSION, 3);
+  assert.equal(ENVELOPE_VERSION, 2);
 });
 
-test('client decoder accepts every version 2 command', () => {
+test('client decoder accepts every version 3 command', () => {
   const commands = [
     { type: 'create', roomId, credential },
     { type: 'join', roomId, credential },
@@ -62,11 +63,12 @@ test('client decoder accepts every version 2 command', () => {
         direction: 'receiver-to-sender',
         kind: 'pair-request',
         expiresAt: null,
+        generation: null,
       }),
     },
     {
       type: 'approve',
-      envelope: envelope({ kind: 'pair-response', expiresAt: null }),
+      envelope: envelope({ kind: 'pair-response', expiresAt: null, generation: null }),
     },
     { type: 'reject' },
     { type: 'extend' },
@@ -76,7 +78,7 @@ test('client decoder accepts every version 2 command', () => {
     {
       type: 'revoke',
       itemId: 'I'.repeat(22),
-      envelope: envelope({ kind: 'control', expiresAt: null }),
+      envelope: envelope({ kind: 'control', expiresAt: null, generation: 0 }),
     },
   ];
 
@@ -89,7 +91,7 @@ test('client decoder accepts every version 2 command', () => {
   }
 });
 
-test('server decoder accepts every version 2 event', () => {
+test('server decoder accepts every version 3 event', () => {
   const events = [
     {
       type: 'ready',
@@ -120,16 +122,18 @@ test('server decoder accepts every version 2 event', () => {
 test('decoders distinguish malformed frames from unsupported versions', () => {
   assert.deepEqual(decodeClientFrame('{'), { ok: false, code: 'invalid_message' });
   assert.deepEqual(decodeServerFrame('[]'), { ok: false, code: 'invalid_message' });
-  assert.deepEqual(
-    decodeClientFrame(
-      JSON.stringify({ version: 1, type: 'create', requestId, roomId, credential }),
-    ),
-    { ok: false, code: 'unsupported_version' },
-  );
-  assert.deepEqual(decodeServerFrame(JSON.stringify({ version: 1, type: 'rejected' })), {
-    ok: false,
-    code: 'unsupported_version',
-  });
+  for (const version of [1, 2]) {
+    assert.deepEqual(
+      decodeClientFrame(JSON.stringify({ version, type: 'create', requestId, roomId, credential })),
+      { ok: false, code: 'unsupported_version' },
+    );
+  }
+  for (const version of [1, 2]) {
+    assert.deepEqual(decodeServerFrame(JSON.stringify({ version, type: 'rejected' })), {
+      ok: false,
+      code: 'unsupported_version',
+    });
+  }
 });
 
 test('client decoder rejects invalid identifiers, credentials, and envelopes', () => {
@@ -175,17 +179,25 @@ test('server decoder rejects malformed snapshots and unknown public errors', () 
   }
 });
 
-test('encrypted envelope header tuple remains frozen at version 1', () => {
+test('encrypted envelope version 2 authenticates the ratchet generation', () => {
   const value = envelope();
   assert.ok(isEnvelope(value));
   assert.deepEqual(headerTuple(value), [
-    1,
+    2,
     roomId,
     'M'.repeat(22),
     'sender-to-receiver',
     'item',
     1_700_000_000_000,
+    0,
     'N'.repeat(16),
   ]);
-  assert.equal(isEnvelope({ ...value, version: 2 }), false);
+  assert.equal(isEnvelope({ ...value, version: 1 }), false);
+  assert.equal(isEnvelope({ ...value, generation: 4096 }), false);
+  assert.equal(isEnvelope({ ...value, generation: null }), false);
+  assert.equal(
+    isEnvelope({ ...value, kind: 'pair-request', expiresAt: null, generation: null }),
+    true,
+  );
+  assert.equal(isEnvelope({ ...value, kind: 'pair-request', generation: 0 }), false);
 });

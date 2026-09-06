@@ -98,6 +98,7 @@
       connection={snapshot.connection}
       deadline={snapshot.deadline}
       items={snapshot.items}
+      itemsOmittedAfterReload={snapshot.itemsOmittedAfterReload}
       canApprove={snapshot.canApprove}
       onApprove={() => controller.approve()}
       onReject={() => controller.rejectPairing()}
@@ -111,6 +112,7 @@
       state={snapshot.receiverView}
       connection={snapshot.connection}
       items={snapshot.items}
+      itemsOmittedAfterReload={snapshot.itemsOmittedAfterReload}
       onSubmitPin={(pin) => controller.submitPin(pin)}
       onRevoke={(id) => controller.revoke(id)}
       onLeave={() => controller.leave()}
@@ -129,11 +131,13 @@
         browser app cannot protect against a malicious code-serving server.
       </p>
       <p>
-        The encrypted envelope has no forward secrecy. Clipboard content is not cleared. Browser
-        memory and storage cannot guarantee secure erasure.
+        KeyBridge deletes processed message keys as its symmetric ratchets advance. A current chain
+        key cannot recover those keys. Current and future messages remain exposed after a
+        chain-state compromise. Clipboard content is not cleared. Browser memory and storage cannot
+        guarantee secure erasure.
       </p>
       <div class="build-details">
-        Transport 2 · Envelope 1 · Version {__APP_VERSION__} · Source {__SOURCE_COMMIT__}
+        Transport 3 · Envelope 2 · Version {__APP_VERSION__} · Source {__SOURCE_COMMIT__}
       </div>
       <details>
         <summary>Client asset SHA-256 hashes</summary>

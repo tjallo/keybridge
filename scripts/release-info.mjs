@@ -30,8 +30,8 @@ await writeFile(
     {
       version: process.env.npm_package_version,
       sourceCommit: process.env.SOURCE_COMMIT ?? 'development',
-      transportVersion: 2,
-      envelopeVersion: 1,
+      transportVersion: 3,
+      envelopeVersion: 2,
       assets,
     },
     null,
